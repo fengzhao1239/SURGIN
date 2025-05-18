@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+
+# Notebook
+.ipynb_checkpoints/
+
+# 临时文件和模型
+*.log
+*.pkl
+*.h5
+*.pt
+*.ckpt
+
+# 环境
+.env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# 本地数据文件夹
+dataset/
