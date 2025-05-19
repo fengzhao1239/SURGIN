@@ -22,3 +22,4 @@ venv/
 
 # 本地数据文件夹
 dataset/
+checckpoint/
