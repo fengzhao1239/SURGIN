@@ -118,7 +118,7 @@ class SimpleBlock3d(nn.Module):
         self.modes2 = modes2
         self.modes3 = modes3
         self.width = width
-        self.fc0 = nn.Linear(12, self.width)
+        self.fc0 = nn.Linear(2, self.width)
         """        
         12 channels for [kr, kz, porosity, inj_loc, inj_rate, 
                          pressure, temperature, Swi, Lam, 
@@ -140,7 +140,7 @@ class SimpleBlock3d(nn.Module):
         self.unet4 = U_net(self.width, self.width, 3, 0)
         self.unet5 = U_net(self.width, self.width, 3, 0)
         self.fc1 = nn.Linear(self.width, 128)
-        self.fc2 = nn.Linear(128, 1)
+        self.fc2 = nn.Linear(128, 2)
 
     def forward(self, x):
         batchsize = x.shape[0]
@@ -203,9 +203,9 @@ class Net3d(nn.Module):
     def forward(self, x):
         batchsize = x.shape[0]
         size_x, size_y, size_z = x.shape[1], x.shape[2], x.shape[3]
-        x = F.pad(F.pad(x, (0,0,0,8,0,8), "replicate"), (0,0,0,0,0,0,0,8), 'constant', 0)
+        # x = F.pad(F.pad(x, (0,0,0,8,0,8), "replicate"), (0,0,0,0,0,0,0,8), 'constant', 0)
         x = self.conv1(x)
-        x = x.view(batchsize, size_x+8, size_y+8, size_z+8, 1)[..., :-8,:-8,:-8, :]
+        # x = x.view(batchsize, size_x+8, size_y+8, size_z+8, 1)[..., :-8,:-8,:-8, :]
         return x.squeeze()
 
 
