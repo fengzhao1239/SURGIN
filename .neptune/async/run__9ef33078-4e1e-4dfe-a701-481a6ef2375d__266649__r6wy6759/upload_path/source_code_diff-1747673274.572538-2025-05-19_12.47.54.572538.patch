@@ -1,0 +1,72 @@
+diff --git a/src/ufno.py b/src/ufno.py
+index e80345e..42a0f10 100644
+--- a/src/ufno.py
++++ b/src/ufno.py
+@@ -29,6 +29,7 @@ class SpectralConv3d(nn.Module):
+     # Complex multiplication
+     def compl_mul3d(self, input, weights):
+         # (batch, in_channel, x,y,t ), (in_channel, out_channel, x,y,t) -> (batch, out_channel, x,y,t)
++        print(f"***** input shape: {input.shape}, weights shape: {weights.shape}")
+         return torch.einsum("bixyz,ioxyz->boxyz", input, weights)
+ 
+     def forward(self, x):
+@@ -203,9 +204,9 @@ class Net3d(nn.Module):
+     def forward(self, x):
+         batchsize = x.shape[0]
+         size_x, size_y, size_z = x.shape[1], x.shape[2], x.shape[3]
+-        # x = F.pad(F.pad(x, (0,0,0,8,0,8), "replicate"), (0,0,0,0,0,0,0,8), 'constant', 0)
++        x = F.pad(F.pad(x, (0,0,0,6,0,8), "replicate"), (0,0,0,0,0,0,0,8), 'constant', 0)
+         x = self.conv1(x)
+-        # x = x.view(batchsize, size_x+8, size_y+8, size_z+8, 1)[..., :-8,:-8,:-8, :]
++        x = x.view(batchsize, size_x+8, size_y+8, size_z+6, 1)[..., :-8,:-8,:-6, :]
+         return x.squeeze()
+ 
+ 
+diff --git a/src/utility.py b/src/utility.py
+index 11ab349..cb230d4 100644
+--- a/src/utility.py
++++ b/src/utility.py
+@@ -56,10 +56,10 @@ class OperatorDataset(Dataset):
+         min_val = np.min(data)
+         max_val = np.max(data)
+         save_min_max = {
+-            'min': min_val,
+-            'max': max_val
++            'min': float(min_val),
++            'max': float(max_val)
+         }
+-        with open(f'../dataset/{save_name}', 'w') as f:
++        with open(f'dataset/{save_name}', 'w') as f:
+             json.dump(save_min_max, f, indent=4)
+         return 2 * (data - min_val) / (max_val - min_val) - 1
+         
+\ No newline at end of file
+diff --git a/train_ufno.py b/train_ufno.py
+index 00d083e..122c864 100644
+--- a/train_ufno.py
++++ b/train_ufno.py
+@@ -15,12 +15,13 @@ NEPTUNE_API = 'eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsI
+ 
+ class Config:
+     def __init__(self):
+-        self.data_path = '../dataset/Multi_Cartesian.hdf5'
+-        self.batch_size = 32
++        os.environ['CUDA_VISIBLE_DEVICES'] = '1'
++        self.data_path = 'dataset/Multi_Cartesian.hdf5'
++        self.batch_size = 1
+         self.num_epochs = 100
+         self.learning_rate = 0.001
+         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+-        self.model_save_path = '../checkpoint/ufno.pth'
++        self.model_save_path = 'checkpoint/ufno.pth'
+         self.tags = ['ufno']
+         self.step_size = 2
+         self.gamma = 0.9
+@@ -34,7 +35,6 @@ class Config:
+ 
+ class Trainer:
+     def __init__(self, config):
+-        os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+         self.config = config
+         self.device = config.device
+         self.model = Net3d(config.mode1, config.mode2, config.mode3, config.width).to(self.device)

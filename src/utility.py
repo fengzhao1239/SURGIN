@@ -56,10 +56,10 @@ class OperatorDataset(Dataset):
         min_val = np.min(data)
         max_val = np.max(data)
         save_min_max = {
-            'min': min_val,
-            'max': max_val
+            'min': float(min_val),
+            'max': float(max_val)
         }
-        with open(f'../dataset/{save_name}', 'w') as f:
+        with open(f'dataset/{save_name}', 'w') as f:
             json.dump(save_min_max, f, indent=4)
         return 2 * (data - min_val) / (max_val - min_val) - 1
         

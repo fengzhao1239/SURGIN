@@ -203,9 +203,9 @@ class Net3d(nn.Module):
     def forward(self, x):
         batchsize = x.shape[0]
         size_x, size_y, size_z = x.shape[1], x.shape[2], x.shape[3]
-        # x = F.pad(F.pad(x, (0,0,0,8,0,8), "replicate"), (0,0,0,0,0,0,0,8), 'constant', 0)
+        x = F.pad(F.pad(x, (0,0,0,6,0,8), "replicate"), (0,0,0,0,0,0,0,8), 'constant', 0)
         x = self.conv1(x)
-        # x = x.view(batchsize, size_x+8, size_y+8, size_z+8, 1)[..., :-8,:-8,:-8, :]
+        x = x.view(batchsize, size_x+8, size_y+8, size_z+6, 2)[..., :-8,:-8,:-6, :]
         return x.squeeze()
 
 

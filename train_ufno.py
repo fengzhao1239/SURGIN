@@ -15,29 +15,30 @@ NEPTUNE_API = 'eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsI
 
 class Config:
     def __init__(self):
-        self.data_path = '../dataset/Multi_Cartesian.hdf5'
-        self.batch_size = 32
+        os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+        self.data_path = 'dataset/Multi_Cartesian.hdf5'
+        self.batch_size = 16
         self.num_epochs = 100
         self.learning_rate = 0.001
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.model_save_path = '../checkpoint/ufno.pth'
+        self.model_save_path = 'checkpoint/ufno.pth'
         self.tags = ['ufno']
         self.step_size = 2
         self.gamma = 0.9
         
         self.mode1 = 10
         self.mode2 = 10
-        self.mode3 = 10
+        self.mode3 = 9
         self.width = 36
         
 
 
 class Trainer:
     def __init__(self, config):
-        os.environ['CUDA_VISIBLE_DEVICES'] = '0'
         self.config = config
         self.device = config.device
         self.model = Net3d(config.mode1, config.mode2, config.mode3, config.width).to(self.device)
+        print(f"----- Model parameters: {self.model.count_params()}")
         self.optimizer = AdamW(self.model.parameters(), lr=config.learning_rate)
         self.scheduler = StepLR(self.optimizer, step_size=config.step_size, gamma=config.gamma)
         self.criterion = nn.MSELoss()
