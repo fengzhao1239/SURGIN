@@ -6,7 +6,8 @@ import operator
 from functools import reduce
 from functools import partial
 
-torch.manual_seed(0)
+torch.manual_seed(42)
+
 
 class SpectralConv3d(nn.Module):
     def __init__(self, in_channels, out_channels, modes1, modes2, modes3):
@@ -140,7 +141,7 @@ class SimpleBlock3d(nn.Module):
         self.unet4 = U_net(self.width, self.width, 3, 0)
         self.unet5 = U_net(self.width, self.width, 3, 0)
         self.fc1 = nn.Linear(self.width, 128)
-        self.fc2 = nn.Linear(128, 2)
+        self.fc2 = nn.Linear(128, 1)
 
     def forward(self, x):
         batchsize = x.shape[0]
@@ -205,7 +206,7 @@ class Net3d(nn.Module):
         size_x, size_y, size_z = x.shape[1], x.shape[2], x.shape[3]
         x = F.pad(F.pad(x, (0,0,0,6,0,8), "replicate"), (0,0,0,0,0,0,0,8), 'constant', 0)
         x = self.conv1(x)
-        x = x.view(batchsize, size_x+8, size_y+8, size_z+6, 2)[..., :-8,:-8,:-6, :]
+        x = x.view(batchsize, size_x+8, size_y+8, size_z+6, 1)[..., :-8,:-8,:-6, :]
         return x.squeeze()
 
 

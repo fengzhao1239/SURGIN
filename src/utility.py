@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 import h5py
 import json
 import numpy as np
+import os
 
 
 
@@ -17,7 +18,7 @@ def load_hdf5(file_path):
     return data
 
 class OperatorDataset(Dataset):
-    def __init__(self, data):
+    def __init__(self, data, ps_flag):
         perm = data['permeability_log']
         ts = data['time_step']
         sat = data['saturation']
@@ -44,6 +45,12 @@ class OperatorDataset(Dataset):
         self.x = self.x.permute(0, 2, 3, 1, 4)
         self.y = self.y.permute(0, 2, 3, 1, 4)
         self.num_samples = self.x.shape[0]
+        if ps_flag == 'sat':
+            self.y = self.y[..., 0]
+        elif ps_flag == 'pre':
+            self.y = self.y[..., 1]
+        else:
+            raise ValueError(f"Invalid ps_flag: {ps_flag}. Expected 'sat' or 'pre'.")
         print(f">>>>> Loaded dataset, x shape: {self.x.shape}, y shape: {self.y.shape}")
     
     def __len__(self):
@@ -53,13 +60,30 @@ class OperatorDataset(Dataset):
         return self.x[idx], self.y[idx]
     
     def _min_max_normalize(self, data, save_name):
-        min_val = np.min(data)
-        max_val = np.max(data)
-        save_min_max = {
-            'min': float(min_val),
-            'max': float(max_val)
-        }
-        with open(f'dataset/{save_name}', 'w') as f:
-            json.dump(save_min_max, f, indent=4)
+        if os.path.exists(f'dataset/{save_name}'):
+            print(f">>>>> Loading min-max values from {save_name}")
+            with open(f'dataset/{save_name}', 'r') as f:
+                save_min_max = json.load(f)
+            min_val = save_min_max['min']
+            max_val = save_min_max['max']
+        else:
+            print(f">>>>> Calculating min-max values for {save_name}")
+            min_val = np.min(data)
+            max_val = np.max(data)
+            save_min_max = {
+                'min': float(min_val),
+                'max': float(max_val)
+            }
+            with open(f'dataset/{save_name}', 'w') as f:
+                json.dump(save_min_max, f, indent=4)
         return 2 * (data - min_val) / (max_val - min_val) - 1
+
+
+if __name__ == '__main__':
+    data = load_hdf5('dataset/Multi_Cartesian.hdf5')
+    
+    dataset = OperatorDataset(data)
+    print(f">>>>> Dataset length: {len(dataset)}")
+    print(f">>>>> First sample x shape: {dataset[0][0].shape}")
+    print(f">>>>> First sample y shape: {dataset[0][1].shape}")
         

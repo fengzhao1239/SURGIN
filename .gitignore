@@ -8,9 +8,11 @@ __pycache__/
 # 临时文件和模型
 *.log
 *.pkl
-*.h5
+*.hdf5
 *.pt
 *.ckpt
+*.pdf
+*.json
 
 # 环境
 .env/
@@ -22,4 +24,6 @@ venv/
 
 # 本地数据文件夹
 dataset/
-checckpoint/
+checkpoint/
+
+.DS_Store

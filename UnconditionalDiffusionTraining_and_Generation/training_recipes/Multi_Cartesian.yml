@@ -1,0 +1,34 @@
+## inference specific args
+#model:
+batch_size : 128
+test_batch_size : 128
+
+# ---- unet parameters ----
+image_size : 64
+num_channels: 64    # base channel count for the model
+num_res_blocks: 2    # number of residual blocks per downsample
+num_heads: 8    # the number of attention heads in each attention layer
+num_head_channels: 32    # if specified, ignore num_heads and instead use a fixed channel width per attention head
+attention_resolutions: "32,16,8,4,2,1"
+channel_mult: "1,1,2,2,4,4"    # channel multiplier for each level of the UNet
+
+
+neptune_tag: "Diffusion"
+
+#diff:
+steps: 1000
+noise_schedule: "cosine"
+
+
+hdf5_path: "dataset/Multi_Cartesian.hdf5"
+
+
+## train specific args
+microbatch: -1  # = batch size
+lr : 5.e-5
+ema_rate: "0.9999"
+log_interval: 100
+save_interval: 10000
+lr_anneal_steps: 0  # default
+
+log_path : "UnconditionalDiffusionTraining_and_Generation/output/logs"
