@@ -4,6 +4,10 @@
 
 SURGIN integrates a **U-Net enhanced Fourier Neural Operator** (UFNO) surrogate with a **score-based generative model** (SGM), framing the conditional generation as a surrogate prediction-guidance process in a Bayesian perspective. Instead of directly learning the conditional generation of geological parameters, an unconditional SGM is first pretrained in a self-supervised manner to capture the geological prior, after which posterior sampling is performed by leveraging a differentiable U-FNO surrogate to enable efficient forward evaluations conditioned on unseen observations.
 
+<p align="center">
+  <img src="framework_pic.jpg" alt="SURGIN Framework" width="100%">
+</p>
+
 **Key capabilities:**
 - **Unconditional generation** of realistic permeability fields via diffusion prior
 - **Surrogate approximation** from permeability fields to spatiotemporal pressure and saturation fields
