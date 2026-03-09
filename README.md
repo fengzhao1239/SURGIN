@@ -1,6 +1,7 @@
 # SURGIN: SURrogate-guided Generative INversion
 
 [![arXiv](https://img.shields.io/badge/arXiv-2509.13189-b31b1b.svg)](https://arxiv.org/abs/2509.13189)
+[![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-yellow)](https://huggingface.co/datasets/zhaoffeng/SURGIN)
 
 SURGIN integrates a **U-Net enhanced Fourier Neural Operator** (UFNO) surrogate with a **score-based generative model** (SGM), framing the conditional generation as a surrogate prediction-guidance process in a Bayesian perspective. Instead of directly learning the conditional generation of geological parameters, an unconditional SGM is first pretrained in a self-supervised manner to capture the geological prior, after which posterior sampling is performed by leveraging a differentiable U-FNO surrogate to enable efficient forward evaluations conditioned on unseen observations.
 
@@ -41,18 +42,18 @@ tar -xzvf surgin_pretrained_data.tar.gz
 
 This extracts the following files into their expected directories:
 
-| File | Location | Description |
-|------|----------|-------------|
-| `ufno_pre.pth` | `checkpoint/` | UFNO pressure surrogate (horizontal) |
-| `ufno_sat.pth` | `checkpoint/` | UFNO saturation surrogate (horizontal) |
-| `ufno_pre_vertical.pth` | `checkpoint/` | UFNO pressure surrogate (vertical) |
-| `ufno_sat_vertical.pth` | `checkpoint/` | UFNO saturation surrogate (vertical) |
-| `ema_0.9999_160000.pt` | `UnconditionalDiffusionTraining_and_Generation/output/logs_gaussian_dit/` | DiT diffusion prior (horizontal) |
-| `ema_0.9999_350000.pt` | `UnconditionalDiffusionTraining_and_Generation/output/logs_gaussian_vertical_dit/` | DiT diffusion prior (vertical) |
-| `K_gstools_1w.npy` | `dataset/` | Horizontal permeability training data |
-| `K_vertical.npy` | `dataset/` | Vertical permeability training data |
-| `Multi_Cartesian_Gaussian.hdf5` | `dataset/` | Horizontal flow simulation dataset |
-| `Multi_Cartesian_Gaussian_vertical.hdf5` | `dataset/` | Vertical flow simulation dataset |
+| File | Location |
+|------|----------|
+| `ufno_pre.pth` | `checkpoint/` |
+| `ufno_sat.pth` | `checkpoint/` |
+| `ufno_pre_vertical.pth` | `checkpoint/` |
+| `ufno_sat_vertical.pth` | `checkpoint/` |
+| `ema_0.9999_160000.pt` | `UnconditionalDiffusionTraining_and_Generation/output/logs_gaussian_dit/` |
+| `ema_0.9999_350000.pt` | `UnconditionalDiffusionTraining_and_Generation/output/logs_gaussian_vertical_dit/` |
+| `K_gstools_1w.npy` | `dataset/`  |
+| `K_vertical.npy` | `dataset/` |
+| `Multi_Cartesian_Gaussian.hdf5` | `dataset/` |
+| `Multi_Cartesian_Gaussian_vertical.hdf5` | `dataset/` |
 
 **Download links:** [surgin_pretrained_data.tar.gz on Hugging Face](https://huggingface.co/datasets/zhaoffeng/SURGIN/resolve/main/surgin_pretrained_data.tar.gz)
 
