@@ -40,7 +40,7 @@ Download the compressed archive and extract it in the repository root:
 tar -xzvf surgin_pretrained_data.tar.gz
 ```
 
-This extracts the following files into their expected directories:
+This extracts the following files into their expected directories (please create the folders if needed):
 
 | File | Location |
 |------|----------|
