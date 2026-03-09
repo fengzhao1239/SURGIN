@@ -57,24 +57,7 @@ This extracts the following files into their expected directories (please create
 
 **Download links:** [surgin_pretrained_data.tar.gz on Hugging Face](https://huggingface.co/datasets/zhaoffeng/SURGIN/resolve/main/surgin_pretrained_data.tar.gz)
 
-### 3. Run Unconditional Generation
-
-Generate permeability field samples from the diffusion prior:
-
-```bash
-cd UnconditionalDiffusionTraining_and_Generation
-python scripts/inference.py training_recipes/Multi_Cartesian.yml
-```
-
-For vertical cross-sections:
-
-```bash
-python scripts/inference.py training_recipes/Multi_Cartesian_vertical.yml
-```
-
-Generated samples are saved to the path specified by `save_gen_path` in the YAML config.
-
-### 4. Run Conditional Inverse Modeling
+### 3. Run Conditional Inverse Modeling
 
 Conditional generation (surrogate-guided diffusion) is performed via Jupyter notebooks in `ConditionalDiffusionGeneration/inference_scripts/Case/Generation/`:
 
@@ -152,9 +135,22 @@ Training recipe configuration (YAML):
 
 Model checkpoints (including EMA weights) are saved to the `log_path` directory specified in the YAML config.
 
-### Step 4: Run Conditional Generation
+### 4. Run Unconditional Generation
 
-Once both the UFNO surrogate and diffusion prior are trained, use the notebooks in `ConditionalDiffusionGeneration/inference_scripts/Case/Generation/` to run surrogate-guided inverse modeling.
+Generate permeability field samples from the diffusion prior:
+
+```bash
+cd UnconditionalDiffusionTraining_and_Generation
+python scripts/inference.py training_recipes/Multi_Cartesian.yml
+```
+
+For vertical cross-sections:
+
+```bash
+python scripts/inference.py training_recipes/Multi_Cartesian_vertical.yml
+```
+
+Generated samples are saved to the path specified by `save_gen_path` in the YAML config.
 
 ---
 
