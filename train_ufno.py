@@ -1,6 +1,6 @@
-from src.ufno import Net3d
-from src.utility import OperatorDataset, load_hdf5
-from src.lploss import LpLoss
+from Surrogate.ufno import Net3d
+from Surrogate.utility import OperatorDataset, load_hdf5
+from Surrogate.lploss import LpLoss
 
 import torch
 import torch.nn as nn
@@ -9,22 +9,20 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import StepLR
 import matplotlib.pyplot as plt
 
-import neptune
+import wandb
 from tqdm import tqdm
 import os
-
-NEPTUNE_API = 'eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI1ODlkODk2OC1lZTUzLTRkNGItODdmOC0zNDdhNGFmYzU4ZjIifQ=='
 
 class Config:
     def __init__(self):
         os.environ['CUDA_VISIBLE_DEVICES'] = '1'
-        self.data_path = 'dataset/Multi_Cartesian.hdf5'
+        self.data_path = 'dataset/Multi_Cartesian_Gaussian_vertical.hdf5'
         self.batch_size = 50
         self.num_epochs = 150
         self.learning_rate = 0.001
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.model_save_path = 'checkpoint/ufno_sat.pth'
-        self.tags = ['ufno']
+        self.model_save_path = 'checkpoint/ufno_pre_vertical.pth'
+        self.tags = ['ufno_gaussian_V(pre)']
         self.step_size = 2
         self.gamma = 0.9
         self.corf = 0.5
@@ -47,7 +45,7 @@ class Trainer:
         self.optimizer = AdamW(self.model.parameters(), lr=config.learning_rate)
         self.scheduler = StepLR(self.optimizer, step_size=config.step_size, gamma=config.gamma)
         self.criterion = LpLoss(d=2, p=2, size_average=True, reduction=True)
-        full_dataset = OperatorDataset(load_hdf5(config.data_path), ps_flag='sat')
+        full_dataset = OperatorDataset(load_hdf5(config.data_path), ps_flag='pre')    # !
         train_size = int(0.9 * len(full_dataset))
         val_size = len(full_dataset) - train_size
         self.train_dataset, self.val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
@@ -55,11 +53,12 @@ class Trainer:
         self.val_dataloader = DataLoader(self.val_dataset, batch_size=config.batch_size, shuffle=False)
         
         
-        self.run = neptune.init_run(
-            project = 'DiffNO',
-            api_token = NEPTUNE_API,
-            tags = config.tags
-        )
+        self.run = wandb.init(
+            project = os.getenv('WANDB_PROJECT', 'YOUR_WANDB_PROJECT_NAME'),
+            entity = os.getenv('WANDB_ENTITY', 'YOUR_WANDB_ENTITY'),
+            tags = config.tags,
+            config = vars(config)
+        ) if os.getenv('WANDB_API_KEY') else None
     
     def derivative_loss(self, pred, label, loss_fn):
         assert pred.shape == label.shape
@@ -85,12 +84,14 @@ class Trainer:
                 self.optimizer.step()
                 train_loss += loss.item()
                 
-                self.run['train/batch_loss'].append(loss.item())
+                if self.run is not None:
+                    wandb.log({'train/batch_loss': loss.item()})
             
             train_loss /= len(self.train_dataloader)
             
-            self.run['train/loss'].append(train_loss)
-            self.plot(x, y, output)
+            if self.run is not None:
+                wandb.log({'train/loss': train_loss, 'epoch': epoch})
+                self.plot(x, y, output)
             
             if (epoch + 1) % 10 == 0:
                 self.validate(epoch)
@@ -109,10 +110,12 @@ class Trainer:
                 loss = self.criterion(output, y)
                 val_loss += loss.item()
                 
-                self.run['val/batch_loss'].append(loss.item())
+                if self.run is not None:
+                    wandb.log({'val/batch_loss': loss.item()})
         
         val_loss /= len(self.val_dataloader)
-        self.run['val/loss'].append(val_loss, step=epoch)
+        if self.run is not None:
+            wandb.log({'val/loss': val_loss, 'epoch': epoch})
     
     def save_ckpt(self, epoch):
         save_data = {
@@ -133,7 +136,8 @@ class Trainer:
         im2 = ax[2].imshow(output[0, :, :, -1].detach().cpu().numpy(), cmap='jet')
         ax[2].set_title('Output')
         fig.colorbar(im2, ax=ax[2], shrink=0.5)
-        self.run['train/plot'].append(fig)
+        if self.run is not None:
+            wandb.log({'train/plot': wandb.Image(fig)})
         plt.close(fig)
 
 

@@ -1,11 +1,11 @@
 #Imports
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 import sys
 import time
 import torch
 import numpy as np
-from src.script_util import create_model, create_gaussian_diffusion
+from src.script_util import create_model, create_gaussian_diffusion, create_DiT_model
 from src.train_util import TrainLoop
 from torch.utils.data import DataLoader, TensorDataset, DistributedSampler
 from src.dist_util import setup_dist, dev
@@ -21,19 +21,27 @@ inp = ri.basic_input(sys.argv[1])
 
 setup_dist()
 # setup logger system
-configure(dir=inp.log_path, format_strs=["stdout","log","neptune"], neptune_tag=inp.neptune_tag)
+configure(dir=inp.log_path, format_strs=["stdout","log","wandb"], wandb_tag=inp.wandb_tag)
 
 ## HyperParams (Change according to the case)
 batch_size = inp.batch_size
 test_batch_size = inp.test_batch_size
 
+# neural network parameters
 image_size= inp.image_size
-num_channels= inp.num_channels
-num_res_blocks= inp.num_res_blocks
-num_heads=inp.num_heads
-num_head_channels= inp.num_head_channels
-attention_resolutions= inp.attention_resolutions
-channel_mult = inp.channel_mult
+
+# num_channels= inp.num_channels
+# num_res_blocks= inp.num_res_blocks
+# num_heads=inp.num_heads
+# num_head_channels= inp.num_head_channels
+# attention_resolutions= inp.attention_resolutions
+# channel_mult = inp.channel_mult
+
+patch_size = inp.patch_size
+in_channels = inp.in_channels
+hidden_size = inp.hidden_size
+depth = inp.depth
+num_heads = inp.num_heads
 
 steps= inp.steps
 noise_schedule= inp.noise_schedule
@@ -61,14 +69,27 @@ def dl_iter(dl):
 ## Unet Model
 log("-- creating model and diffusion...")
 
-unet_model = create_model(image_size=image_size,
-                          num_channels= num_channels,
-                          num_res_blocks= num_res_blocks,
-                          num_heads=num_heads,
-                          num_head_channels=num_head_channels,
-                          attention_resolutions=attention_resolutions,
-                          channel_mult=channel_mult,
-                          learn_sigma=False, # !
+# unet_model = create_model(image_size=image_size,
+#                           num_channels= num_channels,
+#                           num_res_blocks= num_res_blocks,
+#                           num_heads=num_heads,
+#                           num_head_channels=num_head_channels,
+#                           attention_resolutions=attention_resolutions,
+#                           channel_mult=channel_mult,
+#                           learn_sigma=True, # !
+#                         )
+
+unet_model = create_DiT_model(
+                            input_size=image_size,
+                            patch_size=patch_size,
+                            in_channels=in_channels,
+                            hidden_size=hidden_size,
+                            depth=depth,
+                            num_heads=num_heads,
+                            mlp_ratio=4.0,
+                            class_dropout_prob=0.0,
+                            num_classes=None,
+                            learn_sigma=True,
                         )
 
 unet_model.to(dev())
@@ -77,7 +98,7 @@ log(f"-- model created, total params: {sum(p.numel() for p in unet_model.paramet
 ## Gaussian Diffusion
 diff_model = create_gaussian_diffusion(steps=steps,
                                        noise_schedule=noise_schedule,
-                                       learn_sigma=False # !
+                                       learn_sigma=True # !
                                     )
 
 ## Training Loop

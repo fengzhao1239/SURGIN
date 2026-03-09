@@ -4,6 +4,7 @@ import inspect
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 from .unet import SuperResModel, UNetModel, EncoderUNetModel
+from .dit import DiT
 
 NUM_CLASSES = 1000
 
@@ -185,6 +186,33 @@ def create_model(
         use_new_attention_order=use_new_attention_order,
         dims=dims
     )
+
+def create_DiT_model(
+    input_size=64,
+    patch_size=2,
+    in_channels=1,
+    hidden_size=384,
+    depth=12,
+    num_heads=6,
+    mlp_ratio=4.0,
+    class_dropout_prob=0.0,
+    num_classes=None,
+    learn_sigma=True,
+):
+    return DiT(
+        input_size=input_size,
+        patch_size=patch_size,
+        in_channels=in_channels,
+        hidden_size=hidden_size,
+        depth=depth,
+        num_heads=num_heads,
+        mlp_ratio=mlp_ratio,
+        class_dropout_prob=class_dropout_prob,
+        num_classes=num_classes,
+        learn_sigma=learn_sigma
+    )
+    
+    
 
 def create_classifier_and_diffusion(
     image_size,

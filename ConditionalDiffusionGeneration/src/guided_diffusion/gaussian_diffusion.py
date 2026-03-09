@@ -178,6 +178,8 @@ class GaussianDiffusion:
         """ 
         img = x_start    # gaussian noise (torch.randn)
         device = x_start.device
+        
+        distance_history = []
 
         pbar = tqdm(list(range(self.num_timesteps))[::-1])
         for idx in pbar:
@@ -199,13 +201,14 @@ class GaussianDiffusion:
                                         x_0_hat=out['pred_xstart'])    # distance is the norm of || y - A * \hat{x_0} ||
             img = img.detach_()
             if distance is not None:
+                distance_history.append(distance.item())
                 pbar.set_postfix({'distance': distance.item()}, refresh=False)
             if record:
                 if idx % 10 == 0:
                     file_path = os.path.join(save_root, f"progress/x_{str(idx).zfill(4)}.png")
                     plt.imsave(file_path, img)
 
-        return img       
+        return img, np.array(distance_history)
         
     def p_sample(self, model, x, t):
         raise NotImplementedError

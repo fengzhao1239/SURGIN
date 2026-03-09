@@ -10,7 +10,7 @@ https://github.com/openai/baselines/blob/ea25b9e8b234e6ee1bca43083f8f3cf97414399
 └────────────────────────────────────┘
             ↓
 ┌────────────────────────────────────┐
-│        多个 OutputFormat 实例      │ ← stdout / csv / json / tb / neptune
+│        多个 OutputFormat 实例      │ ← stdout / csv / json / tb / wandb
 └────────────────────────────────────┘
 """
 
@@ -221,37 +221,45 @@ class MyTensorBoard(KVWriter):
             self.writer = None
 
 
-class NeptuneWriter(KVWriter):
+class WandbWriter(KVWriter):
     """
-    Logs key/value pairs to Neptune.ai
+    Logs key/value pairs to Weights & Biases (wandb)
     """
     def __init__(self, tags=None):
-        import neptune
-        self.run = neptune.init_run(
-                    project="zhaofeng/DiffNO",
-                    api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI1ODlkODk2OC1lZTUzLTRkNGItODdmOC0zNDdhNGFmYzU4ZjIifQ==",
-                    tags=[tags],
+        project = os.getenv("WANDB_PROJECT", "YOUR_WANDB_PROJECT_NAME")
+        api_key = os.getenv("WANDB_API_KEY")
+        entity = os.getenv("WANDB_ENTITY", "YOUR_WANDB_ENTITY")
+        if not api_key:
+            self.run = None
+            return
+
+        import wandb
+        self.wandb = wandb
+        self.run = wandb.init(
+                    project=project,
+                    entity=entity,
+                    tags=[tags] if tags else None,
                 )
 
     def writekvs(self, kvs):
-        step = kvs.get("step", None)
+        if self.run is None:
+            return
+        log_dict = {}
         for k, v in kvs.items():
             if k == "step":
-                self.run["step"].append(v)
-            # if isinstance(v, (float, int)):
-            if step is not None:
-                self.run[f"metrics/{k}"].append(v, step=step)
-            else:
-                self.run[f"metrics/{k}"].append(v)
-            # else:
-            #     self.run[f"metrics/{k}"] = str(v)  # fallback to log as string
+                continue
+            log_dict[f"metrics/{k}"] = v
+        step = kvs.get("step", None)
+        if step is not None:
+            log_dict["step"] = step
+        self.wandb.log(log_dict)
 
     def close(self):
         if self.run:
-            self.run.stop()
+            self.wandb.finish()
             self.run = None
 
-def make_output_format(format, ev_dir, log_suffix="", neptune_tag="Diffusion"):
+def make_output_format(format, ev_dir, log_suffix="", wandb_tag="Diffusion"):
     os.makedirs(ev_dir, exist_ok=True)
     if format == "stdout":
         return HumanOutputFormat(sys.stdout)
@@ -265,8 +273,8 @@ def make_output_format(format, ev_dir, log_suffix="", neptune_tag="Diffusion"):
         return TensorBoardOutputFormat(osp.join(ev_dir, "tb%s" % log_suffix))
     elif format == "tensorboard_new":
         return MyTensorBoard(ev_dir)
-    elif format == "neptune":
-        return NeptuneWriter(tags=neptune_tag)
+    elif format == "wandb":
+        return WandbWriter(tags=wandb_tag)
     else:
         raise ValueError("Unknown format specified: %s" % (format,))
 
@@ -506,7 +514,7 @@ def mpi_weighted_mean(comm, local_name2valcount):
         return {}
 
 
-def configure(dir=None, format_strs=None, comm=None, log_suffix="", neptune_tag="Diffusion"):
+def configure(dir=None, format_strs=None, comm=None, log_suffix="", wandb_tag="Diffusion"):
     """
     If comm is provided, average all numerical stats across that comm
     """
@@ -531,7 +539,7 @@ def configure(dir=None, format_strs=None, comm=None, log_suffix="", neptune_tag=
         else:
             format_strs = os.getenv("OPENAI_LOG_FORMAT_MPI", "log").split(",")
     format_strs = filter(None, format_strs)
-    output_formats = [make_output_format(f, dir, log_suffix, neptune_tag) for f in format_strs]
+    output_formats = [make_output_format(f, dir, log_suffix, wandb_tag) for f in format_strs]
 
     Logger.CURRENT = Logger(dir=dir, output_formats=output_formats, comm=comm)
     if output_formats:
@@ -559,4 +567,3 @@ def scoped_configure(dir=None, format_strs=None, comm=None):
     finally:
         Logger.CURRENT.close()
         Logger.CURRENT = prevlogger
-

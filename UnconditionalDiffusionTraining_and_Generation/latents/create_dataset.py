@@ -7,8 +7,10 @@ import h5py
 class Multi_Cartesian_Dataset:
     def __init__(self, hdf5_path, train_val_split=0.9):
         
-        with h5py.File(hdf5_path, 'r') as f:
-            permeability = f['permeability_log'][:-500]
+        # with h5py.File(hdf5_path, 'r') as f:
+        #     permeability = f['permeability_log'][:5000]
+        
+        permeability = np.load(hdf5_path)
         
         
         self.permeability = torch.from_numpy(permeability).float()

@@ -1,11 +1,12 @@
 # Python
 __pycache__/
 *.pyc
+*.egg-info/
 
 # Notebook
 .ipynb_checkpoints/
 
-# 临时文件和模型
+# logs and models
 *.log
 *.pkl
 *.hdf5
@@ -13,8 +14,10 @@ __pycache__/
 *.ckpt
 *.pdf
 *.json
+*.npy
 
-# 环境
+# env
+.env
 .env/
 venv/
 
@@ -22,8 +25,26 @@ venv/
 .vscode/
 .idea/
 
-# 本地数据文件夹
+# data and checkpoints
 dataset/
 checkpoint/
 
 .DS_Store
+.neptune/
+wandb/
+
+# other
+vis.ipynb
+basicutility/train_script.py
+basicutility/slicetools.py
+UnconditionalDiffusionTraining_and_Generation/output/
+surgin_pretrained_data.tar.gz
+
+# old src directory (moved to Surrogate/)
+/src/
+
+# conditional generation
+ConditionalDiffusionGeneration/inference_scripts/Case/Generation/conditional_outputs/
+ConditionalDiffusionGeneration/inference_scripts/Case/Generation/*
+!ConditionalDiffusionGeneration/inference_scripts/Case/Generation/Cartesian_inverse_sparse.ipynb
+!ConditionalDiffusionGeneration/inference_scripts/Case/Generation/Vertical_inverse_3wells_injection.ipynb

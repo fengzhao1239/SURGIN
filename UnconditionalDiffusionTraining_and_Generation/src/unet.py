@@ -661,7 +661,9 @@ class UNetModel(nn.Module):
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb)
         h = h.type(x.dtype)
-        return self.out(h)
+        final_out = self.out(h)
+        # print(f"UNet Final output shape: {final_out.shape}")
+        return final_out
 
 
 class SuperResModel(UNetModel):

@@ -7,6 +7,7 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 import functools
+from .dit import DiT
 
 from .fp16_util import convert_module_to_f16, convert_module_to_f32
 from .nn import (
@@ -85,6 +86,37 @@ def create_model(
         use_new_attention_order=use_new_attention_order,
     )
 
+    try:
+        model.load_state_dict(th.load(model_path, map_location='cpu'))
+    except Exception as e:
+        print(f"Got exception: {e} / Randomly initialize")
+    return model
+
+def create_DiT_model(
+    input_size=64,
+    patch_size=2,
+    in_channels=1,
+    hidden_size=384,
+    depth=12,
+    num_heads=6,
+    mlp_ratio=4.0,
+    class_dropout_prob=0.0,
+    num_classes=None,
+    learn_sigma=True,
+    model_path=''
+):
+    model = DiT(
+        input_size=input_size,
+        patch_size=patch_size,
+        in_channels=in_channels,
+        hidden_size=hidden_size,
+        depth=depth,
+        num_heads=num_heads,
+        mlp_ratio=mlp_ratio,
+        class_dropout_prob=class_dropout_prob,
+        num_classes=num_classes,
+        learn_sigma=learn_sigma
+    )
     try:
         model.load_state_dict(th.load(model_path, map_location='cpu'))
     except Exception as e:

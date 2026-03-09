@@ -3,14 +3,14 @@
 from abc import ABC, abstractmethod
 import torch
 import torch.nn.functional as F
-from ConditionalNeuralField.cnf.inference_function import pass_through_model_batch
-from ConditionalNeuralField.cnf.utils.normalize import Normalizer_ts
-from ConditionalNeuralField.cnf.nf_networks import SIRENAutodecoder_film, SIRENAutodecoder_mdf_film
+import json
 import numpy as np
 from einops import rearrange
 import h5py
 from scipy.stats import qmc
 import warnings
+
+from Surrogate.ufno import Net3d
 
 # =================
 # Operation classes
@@ -41,950 +41,820 @@ class NonLinearOperator(ABC):
     @abstractmethod
     def forward(self, data, **kwargs):
         pass
-
-@register_operator(name='inpainting')
-class InpaintingOperator(LinearOperator):
-    '''This operator get pre-defined mask and return masked image.'''
-    def __init__(self, device):
-        self.device = device
     
-    def forward(self, data, **kwargs):
-        try:
-            return data.to(self.device) * kwargs.get('mask', None).to(self.device)
-        except:
-            raise ValueError("Require mask")
-    
-    def transpose(self, data, **kwargs):
-        return data
-    
-    def ortho_project(self, data, **kwargs):
-        return data - self.forward(data, **kwargs)
-    
-@register_operator(name='case2')
-class Case2Operator(NonLinearOperator):
-    def __init__(self, device,
-                 ckpt_path,
-                 max_val,
-                 min_val,
-                 coords,
-                 batch_size):
-        
-        self.device = device
-        self.coords = torch.tensor(coords, dtype = torch.float32, device=device)
 
-        self.x_normalizer = Normalizer_ts(method = '-11',dim=0,
-                                    params = [torch.tensor([1.,1.], device = device),
-                                            torch.tensor([0.,0.], device = device)])
-        self.y_normalizer = Normalizer_ts(method = '-11',dim=0, 
-                                    params = [torch.tensor([[0.9617, 0.2666, 0.2869, 0.0290]], device = device), 
-                                            torch.tensor([[-0.0051, -0.2073, -0.2619, -0.0419]], device = device)])
-        cin_size, cout_size = 2,4
-        self.model = SIRENAutodecoder_film(cin_size,256,cout_size,10,256)
-        ckpt = torch.load(ckpt_path)
-        self.model.load_state_dict(ckpt['model_state_dict'])
-        self.model.eval() 
-        self.model.to(device)
-        
-        self.max_val = torch.from_numpy(max_val).to(device) 
-        self.min_val = torch.from_numpy(min_val).to(device)
-        
-        self.batch_size = batch_size
+# =====================================
+# Operators for 2D Cartesian data
+# =====================================
 
-    def _unnorm(self, norm_data):
-        return ((norm_data[:, 0, ...] + 1)*(self.max_val- self.min_val)/2 + self.min_val)[:, None, ...]
+def load_test_hdf5(file_path):
+    print(f">>>>> Loading test data from {file_path}")
+    data = {}
+    with h5py.File(file_path, 'r') as f:
+        for key in f.keys():
+            if key in ["pressure", "saturation", "permeability_log"]:
+                val = f[key][5000:]    # ! testing dataset
+                data.update({key: val})
+                # print(f">>>>> Loaded test {key} with shape {val.shape}")
+    return data
 
-    def forward(self, data, **kwargs):
-        mask = kwargs.get('mask', None)
-        data_reshaped = rearrange(self._unnorm(data), "s c t l -> (s c t) l")
-        phy_fields = pass_through_model_batch(self.coords, data_reshaped, self.model, 
-                                              self.x_normalizer, self.y_normalizer,
-                                              self.batch_size, self.device)
-        return mask*phy_fields
+def load_test_hdf5_vertical(file_path):
+    print(f">>>>> Loading test data from {file_path}")
+    data = {}
+    with h5py.File(file_path, 'r') as f:
+        for key in f.keys():
+            if key in ["pressure", "saturation", "permeability_log"]:
+                val = f[key][2000:]    # ! testing dataset
+                data.update({key: val})
+                # print(f">>>>> Loaded test {key} with shape {val.shape}")
+    return data
 
-@register_operator(name='case3')
-class Case3Operator(NonLinearOperator):
-    def __init__(self, device,
-                 coords,
-                 batch_size,
-                 max_val,
-                 min_val,
-                 normalizer_params_path,
-                 ckpt_path) -> None:
+def retrieve_min_max(name):
+        with open(f'/ehome/zhao/DiffNO/dataset/{name}_min_max.json', 'r') as f:
+            min_max = json.load(f)
+            min = min_max['min']
+            max = min_max['max']
+        return min, max
         
-        self.device = device
-        self.coords = torch.tensor(coords, dtype = torch.float32, device=device)
-        
-        params = torch.load(normalizer_params_path)
-        x_ub,x_lb = params['x_normalizer_params']
-        y_ub,y_lb = params['y_normalizer_params']
-        cin_size, cout_size = 2,2
-        self.x_normalizer = Normalizer_ts(method = '-11',dim=0, params = (x_ub,x_lb))
-        self.y_normalizer = Normalizer_ts(method = '-11',dim=0, params = (y_ub[:cout_size],y_lb[:cout_size]))
-        
-        ckpt = torch.load(ckpt_path)
-        self.model = SIRENAutodecoder_film(cin_size,256,cout_size,17,256)
-        self.model.load_state_dict(ckpt['model_state_dict'])
-        self.model.eval() 
-        self.model.to(device)
-        
-        self.max_val = torch.from_numpy(max_val).to(device) 
-        self.min_val = torch.from_numpy(min_val).to(device)
-        
-        self.batch_size = batch_size
-        
-    def _unnorm(self, norm_data):
-        return ((norm_data[:, 0, ...] + 1)*(self.max_val- self.min_val)/2 + self.min_val)[:, None, ...] 
-    
-    def forward(self, data, **kwargs):
-        data_reshaped = rearrange(self._unnorm(data), "s c t l -> (s c t) l")
-        return pass_through_model_batch(self.coords, data_reshaped, self.model, 
-                                        self.x_normalizer, self.y_normalizer,
-                                        self.batch_size, self.device)
-        
-@register_operator(name='case3_gappy')
-class Case3Operator_gappy(NonLinearOperator):
-    def __init__(self, device,
-                 coords,
-                 batch_size,
-                 max_val,
-                 min_val,
-                 normalizer_params_path,
-                 ckpt_path
-                 ) -> None:
-        
-        self.device = device
-        self.coords = torch.tensor(coords, dtype = torch.float32, device=device)
-        
-        params = torch.load(normalizer_params_path)
-        x_ub,x_lb = params['x_normalizer_params']
-        y_ub,y_lb = params['y_normalizer_params']
-        cin_size, cout_size = 2,2
-        self.x_normalizer = Normalizer_ts(method = '-11',dim=0, params = (x_ub,x_lb))
-        self.y_normalizer = Normalizer_ts(method = '-11',dim=0, params = (y_ub[:cout_size],y_lb[:cout_size]))
-        
-        ckpt = torch.load(ckpt_path)
-        self.model = SIRENAutodecoder_film(cin_size,256,cout_size,17,256)
-        self.model.load_state_dict(ckpt['model_state_dict'])
-        self.model.eval() 
-        self.model.to(device)
-        
-        self.max_val = torch.from_numpy(max_val).to(device) 
-        self.min_val = torch.from_numpy(min_val).to(device)
-        
-        self.batch_size = batch_size
-        
-    def _unnorm(self, norm_data):
-        return ((norm_data[:, 0, ...] + 1)*(self.max_val- self.min_val)/2 + self.min_val)[:, None, ...] 
-    
-    def forward(self, data, **kwargs):
-        data_reshaped = rearrange(self._unnorm(data), "s c t l -> (s c t) l")
-        out =  pass_through_model_batch(self.coords, data_reshaped, self.model, 
-                                              self.batch_size, self.x_normalizer, self.y_normalizer,
-                                              self.device)
-        out[:, :10, 1] = 0.
-        out[:,10:, 0] = 0.
-        return out
+def norm(data, min_val, max_val):
+    return -1 + (data - min_val) * 2. / (max_val - min_val)
 
-@register_operator(name='case4')
-class Case4Operator(NonLinearOperator):
-    def __init__(self, device,
-                 coords_path,
-                 batch_size,
-                 max_val_path,
-                 min_val_path,
-                 normalizer_params_path,
-                 ckpt_path
-                 ) -> None:
-        
-        self.device = device
-        coords = np.load(coords_path)
-        self.coords = torch.tensor(coords, dtype = torch.float32, device=device)
-        
-        params = torch.load(normalizer_params_path)
-        x_uub, x_llb = params['x_normalizer_params']
-        y_uub,_ = params['y_normalizer0u_params']
-        _,y_llb = params['y_normalizer0l_params']
-        cin_size, cout_size = 3,3
-        self.x_normalizer = Normalizer_ts(method = '-11',dim=0, params = (x_uub,x_llb))  # only take out xyz 
-        self.y_normalizer = Normalizer_ts(method = '-11',dim=0, params = (y_uub[:cout_size],y_llb[:cout_size]))
-        
-        ckpt = torch.load(ckpt_path)
-        self.model = SIRENAutodecoder_film(cin_size,384,cout_size,15,384) 
-        self.model.load_state_dict(ckpt['model_state_dict'])
-        self.model.eval() 
-        self.model.to(device)
-        
-        max_val = np.load(max_val_path)
-        min_val = np.load(min_val_path)
-        self.max_val = torch.from_numpy(max_val).to(device) 
-        self.min_val = torch.from_numpy(min_val).to(device)
-        
-        self.batch_size = batch_size
-        
-    def _unnorm(self, norm_data):
-        return ((norm_data[:, 0, ...] + 1)*(self.max_val- self.min_val)/2 + self.min_val)[:, None, ...] 
-    
-    def forward(self, data, **kwargs):
-        data_reshaped = rearrange(self._unnorm(data), "s c t l -> (s c t) l")
-        return pass_through_model_batch(self.coords, data_reshaped, self.model, 
-                                            self.x_normalizer, self.y_normalizer, self.batch_size,
-                                              self.device)
-
-# ====================
-# Self-defined classes
-# ====================
+def unnorm(norm_data, min_val, max_val):
+    return (norm_data + 1) * (max_val - min_val) / 2 + min_val
 
 
-# @register_operator(name='cartesian_sparse_measurement')
-# class CartesianOperatorSparse(NonLinearOperator):
-#     '''for sparse measurement, we only need to query the measured predicted points A*x, and provide the measured data for y'''
-#     def __init__(self,
-#                  device,
-#                  ckpt_path,
-#                  norm_record_path,
-#                  ) -> None:
-        
-#         self.device = device
-#         self.norm_record_path = norm_record_path
-#         self.query_points = [(10, 10), (20, 5), (40, 5), (50, 15), (60, 25), (45, 2), (33, 20), (30, 40), (15, 15), (55, 32)]    # todo: specify ur measurement points
-#         # self.query_points = [(10, 10), (50, 10)]
-#         self.trajectory_num = 4500     # todo: specify ur reference trajectory (note 4k-5k is test set)
-        
-#         ckpt = torch.load(ckpt_path)
-#         self.model = SIRENAutodecoder_mdf_film(2, 64, 1, 6, 64)    # todo: specify ur neural field network
-#         self.model.load_state_dict(ckpt['model_state_dict'])
-#         self.model.eval() 
-#         self.model.to(device)
-        
-#         ckpt_latent = ckpt["hidden_states"]["latents"]    # <n*t, dims>
-#         self.latent_max, self.latent_min = torch.max(ckpt_latent), torch.min(ckpt_latent)
-#         self.latent_max, self.latent_min = self.latent_max.to(self.device), self.latent_min.to(self.device)
-    
-#     def forward(self, data, **kwargs):
-#         # ! diffusion data: <b, c=1, t, l>  --> cnf in: <b*c*t, l>
-
-#         traj_num = data.shape[0]
-#         time_steps = data.shape[2]
-#         cnf_latent_in = rearrange(self._unnorm(data), "b c t l -> (b c t) l").to(self.device)    # <(b*t), l>
-#         # ! use cnf to decode
-#         cnf_coord_in = self.sparse_cartesian_coord().to(self.device)    # <N, 2>
-#         cnf_latent_in = cnf_latent_in.unsqueeze(1)    # <(b*t), 1, l>
-#         cnf_coord_in = cnf_coord_in.unsqueeze(0)    # <1, N, 2>
-
-#         cnf_out = self.model(cnf_coord_in, cnf_latent_in).squeeze()    # <(b*t), N, 1>
-
-#         cnf_out_traj = rearrange(cnf_out, "(b t) N -> b t N", b=traj_num, t=time_steps)    # <b, t, N>
-
-#         cnf_out_traj = self._unnorm_cnf(cnf_out_traj)
-#         assert cnf_out_traj.shape == (traj_num, time_steps, len(self.query_points)), \
-#             f"Expected cnf_out_traj shape ({traj_num}, {time_steps}, {len(self.query_points)}), but got {cnf_out_traj.shape}"
-
-#         return cnf_out_traj
-    
-#     def _unnorm(self, norm_data):
-#         # * for diffusion denorm
-#         return (norm_data + 1) * (self.latent_max - self.latent_min) / 2 + self.latent_min
-
-#     def _unnorm_cnf(self, norm_data):
-#         # * for cnf denorm
-#         max_val = self._get_cartesian_normalizer()["y_max"].to(self.device)
-#         min_val = self._get_cartesian_normalizer()["y_min"].to(self.device)
-#         return (norm_data + 1) * (max_val - min_val) / 2 + min_val
-    
-#     def _get_cartesian_normalizer(self):
-#         # * for cnf denorm
-#         normalize_records = torch.load(self.norm_record_path)
-#         x_records, y_records = normalize_records["x_normalizer_params"], normalize_records["y_normalizer_params"]
-#         x_max, x_min = x_records[0], x_records[1]
-#         y_max, y_min = y_records[0], y_records[1]
-#         return {
-#             'x_max': x_max,
-#             'x_min': x_min,
-#             'y_max': y_max,
-#             'y_min': y_min
-#         }
-    
-#     def _gene_cartesian_coord(self):
-#         # generate the Cartesian coordinates
-#         h = w = 64
-#         H = W = 640
-#         x_coord = np.linspace(0, H, h)
-#         y_coord = np.linspace(0, W, w)
-#         xx, yy = np.meshgrid(x_coord, y_coord)
-#         xy_coord = np.stack((xx, yy), axis=-1)
-#         assert xy_coord.shape == (h, w, 2), f"Expected coord shape (h, w, 2), but got {xy_coord.shape}"
-#         xy_coord = torch.tensor(xy_coord, dtype=torch.float32)
-#         x_min, x_max = self._get_cartesian_normalizer()["x_min"], self._get_cartesian_normalizer()["x_max"]
-#         xy_coord = ((xy_coord - x_min) / (x_max - x_min)) * 2 - 1
-#         return xy_coord
-
-#     def sparse_cartesian_coord(self):
-#         '''retrieve the measuring coordinates, maybe used for visualization'''
-#         xy_coord = self._gene_cartesian_coord()
-#         query_pts = self.query_points    # ur query points
-#         query_coord = torch.stack([xy_coord[i, j] for (i, j) in query_pts], dim=0).float()    # <N, 2>
-#         assert query_coord.shape == (len(query_pts), 2), f"Expected query coord shape ({len(query_pts)}, 2), but got {query_coord.shape}"
-#         return query_coord
-        
-#     def sparse_cartesian_measurement(self):
-#         '''will be used for || y - A * x ||, and visualizing the true param'''
-#         # retrieve the reference dataset 
-#         with h5py.File("/ehome/zhao/nf/CoNFiLD/Dataset/Cartesian.hdf5", "r") as f:
-#             data = f["saturation"][:].astype(np.float32)
-#             param = f["permeability_log"][:].astype(np.float32)
-#         data = data[self.trajectory_num, ...]
-#         param = param[self.trajectory_num, ...]
-#         assert len(data.shape) == 3, f"Expected data shape (t, h, w), but got {data.shape}"
-#         assert len(param.shape) == 2, f"Expected param shape (h, w), but got {param.shape}"
-#         # retrieve the reference measurements
-#         q_coord = self.query_points
-#         measurements = torch.tensor([[data[t, i, j] for (i, j) in q_coord] for t in range(data.shape[0])], dtype=torch.float32)  # <t, N>
-#         assert measurements.shape == (data.shape[0], len(q_coord)), \
-#             f"Expected measurements shape ({data.shape[0]}, {len(q_coord)}), but got {measurements.shape}"
-#         return {
-#             'measurements': measurements,
-#             'reference_data': data,
-#             'reference_param': param,
-#         }
-        
-
-# @register_operator(name='cartesian_Real_superresolution')
-# class CartesianOperatorSR(NonLinearOperator):
-#     '''for sparse measurement, we only need to query the measured predicted points A*x, and provide the measured data for y'''
-#     def __init__(self,
-#                  device,
-#                  ckpt_path,
-#                  norm_record_path,
-#                  ds_size,
-#                  ) -> None:
-        
-#         self.device = device
-#         self.norm_record_path = norm_record_path
-#         self.ds_size = ds_size   # todo: specify ur measurement points
-#         self.trajectory_num = 4100     # todo: specify ur reference trajectory (note 4k-5k is test set)
-        
-#         ckpt = torch.load(ckpt_path)
-#         self.model = SIRENAutodecoder_mdf_film(2, 64, 1, 6, 64)    # todo: specify ur neural field network
-#         self.model.load_state_dict(ckpt['model_state_dict'])
-#         self.model.eval() 
-#         self.model.to(device)
-        
-#         ckpt_latent = ckpt["hidden_states"]["latents"]    # <n*t, dims>
-#         self.latent_max, self.latent_min = torch.max(ckpt_latent), torch.min(ckpt_latent)
-#         self.latent_max, self.latent_min = self.latent_max.to(self.device), self.latent_min.to(self.device)
-    
-#     def forward(self, data, **kwargs):
-#         # ! diffusion data: <b, c=1, t, l>  --> cnf in: <b*c*t, l>
-#         traj_num = data.shape[0]
-#         time_steps = data.shape[2]
-#         cnf_latent_in = rearrange(self._unnorm(data), "b c t l -> (b c t) l").to(self.device)    # <(b*t), l>
-#         # ! use cnf to decode
-#         cnf_coord_in = self.sparse_cartesian_coord().to(self.device)    # <h, w, 2>
-#         cnf_latent_in = cnf_latent_in.unsqueeze(1).unsqueeze(1)    # <(b*t), 1, 1, l>
-#         cnf_coord_in = cnf_coord_in.unsqueeze(0)    # <1, h, w, 2>
-#         assert len(cnf_latent_in.shape) == len(cnf_coord_in.shape) == 4, \
-#             f"CNF Decoder input shape [{cnf_coord_in.shape}, {cnf_latent_in.shape}] mismatch, expected 4D tensor"
-
-#         cnf_out = self.model(cnf_coord_in, cnf_latent_in).squeeze(-1)    # <(b*t), h, w, 1>
-
-#         cnf_out_traj = rearrange(cnf_out, "(b t) h w -> b t h w", b=traj_num, t=time_steps)    # <b, t, h, w>
-
-#         cnf_out_traj = self._unnorm_cnf(cnf_out_traj)
-#         assert cnf_out_traj.shape == (traj_num, time_steps, 64, 64), \
-#             f"Expected cnf_out_traj shape ({traj_num}, {time_steps}, 64, 64), but got {cnf_out_traj.shape}"
-
-#         down_cnf_out_traj = F.interpolate(cnf_out_traj, size=self.ds_size, mode='nearest')
-#         return down_cnf_out_traj
-    
-#     def _unnorm(self, norm_data):
-#         # * for diffusion denorm
-#         return (norm_data + 1) * (self.latent_max - self.latent_min) / 2 + self.latent_min
-
-#     def _unnorm_cnf(self, norm_data):
-#         # * for cnf denorm
-#         max_val = self._get_cartesian_normalizer()["y_max"].to(self.device)
-#         min_val = self._get_cartesian_normalizer()["y_min"].to(self.device)
-#         return (norm_data + 1) * (max_val - min_val) / 2 + min_val
-    
-#     def _get_cartesian_normalizer(self):
-#         # * for cnf denorm
-#         normalize_records = torch.load(self.norm_record_path)
-#         x_records, y_records = normalize_records["x_normalizer_params"], normalize_records["y_normalizer_params"]
-#         x_max, x_min = x_records[0], x_records[1]
-#         y_max, y_min = y_records[0], y_records[1]
-#         return {
-#             'x_max': x_max,
-#             'x_min': x_min,
-#             'y_max': y_max,
-#             'y_min': y_min
-#         }
-    
-#     def _gene_cartesian_coord(self):
-#         # generate the Cartesian coordinates
-#         h = w = 64
-#         H = W = 640
-#         x_coord = np.linspace(0, H, h)
-#         y_coord = np.linspace(0, W, w)
-#         xx, yy = np.meshgrid(x_coord, y_coord)
-#         xy_coord = np.stack((xx, yy), axis=-1)
-#         assert xy_coord.shape == (h, w, 2), f"Expected coord shape (h, w, 2), but got {xy_coord.shape}"
-#         xy_coord = torch.tensor(xy_coord, dtype=torch.float32)
-#         x_min, x_max = self._get_cartesian_normalizer()["x_min"], self._get_cartesian_normalizer()["x_max"]
-#         xy_coord = ((xy_coord - x_min) / (x_max - x_min)) * 2 - 1
-#         return xy_coord
-
-#     def sparse_cartesian_coord(self):
-#         '''retrieve the measuring coordinates, maybe used for visualization'''
-#         xy_coord = self._gene_cartesian_coord()
-#         return xy_coord
-        
-#     def sparse_cartesian_measurement(self):
-#         '''will be used for || y - A * x ||, and visualizing the true param'''
-#         # retrieve the reference dataset 
-#         with h5py.File("/ehome/zhao/nf/CoNFiLD/Dataset/Cartesian.hdf5", "r") as f:
-#             data = f["saturation"][:].astype(np.float32)
-#             param = f["permeability_log"][:].astype(np.float32)
-#         data = data[self.trajectory_num, ...]
-#         param = param[self.trajectory_num, ...]
-#         assert len(data.shape) == 3, f"Expected data shape (t, h, w), but got {data.shape}"
-#         assert len(param.shape) == 2, f"Expected param shape (h, w), but got {param.shape}"
-#         # retrieve the reference measurements
-#         measurements = torch.tensor(data, dtype=torch.float32)  # <t, h, w>
-#         ds_measurements = F.interpolate(measurements.unsqueeze(0), size=self.ds_size, mode='nearest').squeeze(0)    # <t, ds_h, ds_w>
-#         # assert ds_measurements.shape == (data.shape[0], self.ds_size, self.ds_size), \
-#         #     f"Expected measurements shape ({data.shape[0]}, {self.ds_size}, {self.ds_size}), but got {ds_measurements.shape}"
-#         return {
-#             'measurements': ds_measurements,
-#             'reference_data': data,
-#             'reference_param': param,
-#         }
-
-
-# ===================================================================
-# Self-defined classes for joint generation of solution and parameter
-# ===================================================================
-
-# ------------------------- sparse measurement -------------------------
-
-@register_operator(name='cartesian_sparse_measurement')
-class CartesianOperatorSM(NonLinearOperator):
-    '''for sparse measurement, we only need to query the measured predicted points A*x, and provide the measured data for y'''
+# =====================================
+# Horizontal case
+# =====================================
+@register_operator(name='horizontal_superresolution')
+class horizontal_superresolution(NonLinearOperator):
     def __init__(self,
                 device,
-                ckpt_path,
-                norm_record_path,
-                simdata_path,
-                simdata_idx,
-                num_probed,
-                ) -> None:
-        
-        self.device = device
-        self.norm_record_path = norm_record_path
-        # self.query_points = self._gene_random_idx(num_probed)   # todo: specify ur measurement points
-        if num_probed == 1:
-            self.query_points = [(32, 28)]
-        elif num_probed == 3:
-            self.query_points = [(20, 20), (40, 30), (30, 50)]
-        elif num_probed == 5:
-            self.query_points = [(10, 10), (20, 55), (28, 26), (40, 46), (55, 15)]
-        else:
-            self.query_points = self._gene_random_idx(num_probed)
-            warnings.warn(f"Randomly generated {num_probed} points for measurement, please check the results.")
-        
-        ckpt = torch.load(ckpt_path)
-        self.model = SIRENAutodecoder_mdf_film(omega_0=5,
-                                                in_coord_features=2,
-                                                in_latent_features=256,
-                                                out_features=3,
-                                                num_hidden_layers=5,
-                                                hidden_features=128)    # todo: specify ur neural field network
-        self.model.load_state_dict(ckpt['model_state_dict'])
-        self.model.eval() 
-        self.model.to(device)
-        
-        ckpt_latent = ckpt["hidden_states"]["latents"]    # <n*t, dims>
-        self.latent_max, self.latent_min = torch.max(ckpt_latent), torch.min(ckpt_latent)
-        self.latent_max, self.latent_min = self.latent_max.to(self.device), self.latent_min.to(self.device)
-        
-        normalize_records = torch.load(self.norm_record_path)
-        self.out_normalizer = Normalizer_ts(method="-11", dim=0)
-        self.out_normalizer.params = normalize_records["y_normalizer_params"]
-        
-        # with h5py.File(simdata_path, "r") as f:
-        #     # ! only apply to cartesian data
-        #     pressure = f["pressure"][simdata_idx, :, :, :-1, None].astype(np.float32)
-        #     saturation = f["saturation"][simdata_idx, :, :, :-1, None].astype(np.float32)
-        #     param = f["permeability_log"][simdata_idx, None, :, :-1, None].astype(np.float32)
-        # param = np.repeat(param, saturation.shape[1], axis=1)
-        # self.simdata = np.concatenate([pressure, saturation, param], axis=-1)    # <t, h, w, c=3>
-        # self.simdata = torch.tensor(self.simdata, dtype=torch.float32).to(self.device)    # <t, h, w, c=3>
-        self.simdata = np.load(simdata_path)[simdata_idx]
-        print(f"Simulation data loaded, with shape {self.simdata.shape}")
-        
-    def forward(self, data, **kwargs):
-        # * diffusion data: <b, c=1, t, l>  --> cnf in: <b*c*t, l>, unnorm
-        traj_num = data.shape[0]
-        time_steps = data.shape[2]
-        cnf_latent_in = rearrange(self._unnorm(data), "b c t l -> (b c t) l").to(self.device)    # <(b*t), l>
-        
-        # * use cnf to decode
-        cnf_coord_in = self.sparse_cartesian_coord().to(self.device)    # <N, coord_dim=2>
-        cnf_latent_in = cnf_latent_in.unsqueeze(1)    # <(b*t), 1, l>
-        cnf_coord_in = cnf_coord_in.unsqueeze(0)    # <1, N, 2>
-        cnf_out = self.model(cnf_coord_in, cnf_latent_in).squeeze(1)    # <(b*t), N, c=3> 'we add None @ dim=1'
-        
-        # * reshape and unnorm
-        cnf_out_traj = rearrange(cnf_out, "(b t) N c-> b t N c", b=traj_num, t=time_steps)    # <b, t, N, c>
-        # cnf_out_traj = self._unnorm_cnf(cnf_out_traj) #! change
-        assert cnf_out_traj.shape[:-1] == (traj_num, time_steps, len(self.query_points)), \
-            f"Expected cnf_out_traj shape ({traj_num}, {time_steps}, {len(self.query_points)}, C), but got {cnf_out_traj.shape}"
-
-        output = cnf_out_traj[..., :-1]    # <b, t, N, c=2>
-        return output
-    
-    def _unnorm(self, norm_data):
-        # * for diffusion unnorm
-        return (norm_data + 1) * (self.latent_max - self.latent_min) / 2 + self.latent_min
-
-    def _unnorm_cnf(self, norm_data):
-        # * for cnf unnorm
-        unnormed_data = self.out_normalizer.denormalize(norm_data)
-        return unnormed_data
-    
-    def _norm_cnf(self, raw_data):
-        # * for cnf norm
-        normed_data = self.out_normalizer.normalize(raw_data)
-        return normed_data
-    
-    def _gene_random_idx(self, num_pts, max_range=(63, 63)):
-        SAMPLER = qmc.LatinHypercube(d=2, seed=42)
-        sample = SAMPLER.random(n=num_pts)  # shape: (num_pts, 2), range: [0, 1)
-        scaled = qmc.scale(sample, [0, 0], [max_range[0], max_range[1]])
-        idxes = [tuple(map(int, pt)) for pt in scaled]
-        return idxes
-
-    def _gene_cartesian_coord(self):
-        # generate the Cartesian coordinates
-        h = w = 64
-        H = W = 640
-        # h, w = 64, 63
-        # H, W = 640, 630
-        x_coord = np.linspace(0, H, h)
-        y_coord = np.linspace(0, W, w)
-        xx, yy = np.meshgrid(x_coord, y_coord, indexing='ij')
-        xy_coord = np.stack((xx, yy), axis=-1)
-        assert xy_coord.shape == (h, w, 2), f"Expected coord shape (h, w, 2), but got {xy_coord.shape}"
-        xy_coord = torch.tensor(xy_coord, dtype=torch.float32)
-        x_min, x_max = xy_coord.min(), xy_coord.max()
-        xy_coord = ((xy_coord - x_min) / (x_max - x_min)) * 2 - 1
-        return xy_coord
-
-    def sparse_cartesian_coord(self):
-        '''retrieve the measuring coordinates, maybe used for visualization'''
-        xy_coord = self._gene_cartesian_coord()
-        query_pts = self.query_points    # ur query points
-        query_coord = torch.stack([xy_coord[i, j] for (i, j) in query_pts], dim=0).float()    # <N, 2>
-        assert query_coord.shape == (len(query_pts), 2), f"Expected query coord shape ({len(query_pts)}, 2), but got {query_coord.shape}"
-        return query_coord
-        
-    def sparse_cartesian_measurement(self):
-        '''will be used for || y - A * x ||, and visualizing the true param'''
-        data = self._norm_cnf(torch.tensor(self.simdata))    # <t, h, w, c=3>
-        # data = torch.tensor(self.simdata, dtype=torch.float32).to(self.device)    # <t, h, w, c=3>
-        q_coord = self.query_points
-        measurements = torch.stack([torch.stack([data[t, i, j, :-1] for (i, j) in q_coord]) for t in range(data.shape[0])])  # <t, N, c=?>
-        # assert measurements.shape == (data.shape[0], len(q_coord)), \
-        #     f"Expected measurements shape ({data.shape[0]}, {len(q_coord)}), but got {measurements.shape}"
-        print(f"Measurement shape: {measurements.shape}")
-        return measurements.unsqueeze(0).to(self.device)
-
-@register_operator(name='cartesian_sparse_measurement_all')
-class CartesianOperatorSMAll(NonLinearOperator):
-    '''for sparse measurement, we only need to query the measured predicted points A*x, and provide the measured data for y'''
-    def __init__(self,
-                device,
-                ckpt_path,
-                norm_record_path,
-                simdata_path,
-                simdata_idx,
-                num_probed,
-                ) -> None:
-        
-        self.device = device
-        self.norm_record_path = norm_record_path
-        # self.query_points = self._gene_random_idx(num_probed)   # todo: specify ur measurement points
-        if num_probed == 1:
-            self.query_points = [(32, 28)]
-        elif num_probed == 3:
-            self.query_points = [(20, 20), (40, 30), (30, 50)]
-        elif num_probed == 5:
-            self.query_points = [(10, 10), (20, 55), (28, 26), (40, 46), (55, 15)]
-        else:
-            self.query_points = self._gene_random_idx(num_probed)
-            warnings.warn(f"Randomly generated {num_probed} points for measurement, please check the results.")
-        
-        ckpt = torch.load(ckpt_path)
-        self.model = SIRENAutodecoder_mdf_film(omega_0=5,
-                                                in_coord_features=2,
-                                                in_latent_features=256,
-                                                out_features=3,
-                                                num_hidden_layers=5,
-                                                hidden_features=128)    # todo: specify ur neural field network
-        self.model.load_state_dict(ckpt['model_state_dict'])
-        self.model.eval() 
-        self.model.to(device)
-        
-        ckpt_latent = ckpt["hidden_states"]["latents"]    # <n*t, dims>
-        self.latent_max, self.latent_min = torch.max(ckpt_latent), torch.min(ckpt_latent)
-        self.latent_max, self.latent_min = self.latent_max.to(self.device), self.latent_min.to(self.device)
-        
-        normalize_records = torch.load(self.norm_record_path)
-        self.out_normalizer = Normalizer_ts(method="-11", dim=0)
-        self.out_normalizer.params = normalize_records["y_normalizer_params"]
-        
-        # with h5py.File(simdata_path, "r") as f:
-        #     # ! only apply to cartesian data
-        #     pressure = f["pressure"][simdata_idx, :, :, :-1, None].astype(np.float32)
-        #     saturation = f["saturation"][simdata_idx, :, :, :-1, None].astype(np.float32)
-        #     param = f["permeability_log"][simdata_idx, None, :, :-1, None].astype(np.float32)
-        # param = np.repeat(param, saturation.shape[1], axis=1)
-        # self.simdata = np.concatenate([pressure, saturation, param], axis=-1)    # <t, h, w, c=3>
-        # self.simdata = torch.tensor(self.simdata, dtype=torch.float32).to(self.device)    # <t, h, w, c=3>
-        self.simdata = np.load(simdata_path)[simdata_idx]
-        print(f"Simulation data loaded, with shape {self.simdata.shape}")
-        
-    def forward(self, data, **kwargs):
-        # * diffusion data: <b, c=1, t, l>  --> cnf in: <b*c*t, l>, unnorm
-        traj_num = data.shape[0]
-        time_steps = data.shape[2]
-        cnf_latent_in = rearrange(self._unnorm(data), "b c t l -> (b c t) l").to(self.device)    # <(b*t), l>
-        
-        # * use cnf to decode
-        cnf_coord_in = self.sparse_cartesian_coord().to(self.device)    # <N, coord_dim=2>
-        cnf_latent_in = cnf_latent_in.unsqueeze(1)    # <(b*t), 1, l>
-        cnf_coord_in = cnf_coord_in.unsqueeze(0)    # <1, N, 2>
-        cnf_out = self.model(cnf_coord_in, cnf_latent_in).squeeze(1)    # <(b*t), N, c=3> 'we add None @ dim=1'
-        
-        # * reshape and unnorm
-        cnf_out_traj = rearrange(cnf_out, "(b t) N c-> b t N c", b=traj_num, t=time_steps)    # <b, t, N, c>
-        # cnf_out_traj = self._unnorm_cnf(cnf_out_traj) #! change
-        assert cnf_out_traj.shape[:-1] == (traj_num, time_steps, len(self.query_points)), \
-            f"Expected cnf_out_traj shape ({traj_num}, {time_steps}, {len(self.query_points)}, C), but got {cnf_out_traj.shape}"
-
-        output = cnf_out_traj[..., :]    # <b, t, N, c=2>
-        return output
-    
-    def _unnorm(self, norm_data):
-        # * for diffusion unnorm
-        return (norm_data + 1) * (self.latent_max - self.latent_min) / 2 + self.latent_min
-
-    def _unnorm_cnf(self, norm_data):
-        # * for cnf unnorm
-        unnormed_data = self.out_normalizer.denormalize(norm_data)
-        return unnormed_data
-    
-    def _norm_cnf(self, raw_data):
-        # * for cnf norm
-        normed_data = self.out_normalizer.normalize(raw_data)
-        return normed_data
-    
-    def _gene_random_idx(self, num_pts, max_range=(63, 63)):
-        SAMPLER = qmc.LatinHypercube(d=2, seed=42)
-        sample = SAMPLER.random(n=num_pts)  # shape: (num_pts, 2), range: [0, 1)
-        scaled = qmc.scale(sample, [0, 0], [max_range[0], max_range[1]])
-        idxes = [tuple(map(int, pt)) for pt in scaled]
-        return idxes
-
-    def _gene_cartesian_coord(self):
-        # generate the Cartesian coordinates
-        h = w = 64
-        H = W = 640
-        # h, w = 64, 63
-        # H, W = 640, 630
-        x_coord = np.linspace(0, H, h)
-        y_coord = np.linspace(0, W, w)
-        xx, yy = np.meshgrid(x_coord, y_coord, indexing='ij')
-        xy_coord = np.stack((xx, yy), axis=-1)
-        assert xy_coord.shape == (h, w, 2), f"Expected coord shape (h, w, 2), but got {xy_coord.shape}"
-        xy_coord = torch.tensor(xy_coord, dtype=torch.float32)
-        x_min, x_max = xy_coord.min(), xy_coord.max()
-        xy_coord = ((xy_coord - x_min) / (x_max - x_min)) * 2 - 1
-        return xy_coord
-
-    def sparse_cartesian_coord(self):
-        '''retrieve the measuring coordinates, maybe used for visualization'''
-        xy_coord = self._gene_cartesian_coord()
-        query_pts = self.query_points    # ur query points
-        query_coord = torch.stack([xy_coord[i, j] for (i, j) in query_pts], dim=0).float()    # <N, 2>
-        assert query_coord.shape == (len(query_pts), 2), f"Expected query coord shape ({len(query_pts)}, 2), but got {query_coord.shape}"
-        return query_coord
-        
-    def sparse_cartesian_measurement(self):
-        '''will be used for || y - A * x ||, and visualizing the true param'''
-        data = self._norm_cnf(torch.tensor(self.simdata))    # <t, h, w, c=3>
-        # data = torch.tensor(self.simdata, dtype=torch.float32).to(self.device)    # <t, h, w, c=3>
-        q_coord = self.query_points
-        measurements = torch.stack([torch.stack([data[t, i, j, :] for (i, j) in q_coord]) for t in range(data.shape[0])])  # <t, N, c=?>
-        # assert measurements.shape == (data.shape[0], len(q_coord)), \
-        #     f"Expected measurements shape ({data.shape[0]}, {len(q_coord)}), but got {measurements.shape}"
-        print(f"Measurement shape: {measurements.shape}")
-        return measurements.unsqueeze(0).to(self.device)
-
-
-# ------------------------- low fidelity measurement (super-resolution) -------------------------
-
-@register_operator(name='cartesian_superresolution')
-class CartesianOperatorSR(NonLinearOperator):
-    '''for sparse measurement, we only need to query the measured predicted points A*x, and provide the measured data for y'''
-    def __init__(self,
-                device,
-                ckpt_path,
-                norm_record_path,
-                simdata_path,
-                simdata_idx,
+                hdf5_path,
+                test_idx,
                 ds_size,
+                condition_variable,
                 vanilla_flag=False,
                 ) -> None:
+        assert condition_variable in ['sat', 'pre', 'perm'], "Condition variable must be either 'sat' or 'pre' or 'perm'."
         
         self.device = device
-        self.norm_record_path = norm_record_path
-        self.ds_size = (ds_size, ds_size) if isinstance(ds_size, int) else tuple(ds_size)    # todo: specify ur downsampling size
         self.vanilla_flag = vanilla_flag
-        if vanilla_flag:
-            warnings.warn(f"Vanilla flag is set to True, using the original data without downsampling!")
+        self.ds_size = (ds_size, ds_size) if isinstance(ds_size, int) else tuple(ds_size)    # todo: specify ur downsampling size
         
-        ckpt = torch.load(ckpt_path)
-        self.model = SIRENAutodecoder_mdf_film(omega_0=5,
-                                                in_coord_features=2,
-                                                in_latent_features=256,
-                                                out_features=3,
-                                                num_hidden_layers=5,
-                                                hidden_features=128)    # todo: specify ur neural field network
-        self.model.load_state_dict(ckpt['model_state_dict'])
-        self.model.eval() 
-        self.model.to(device)
+        test_sim = load_test_hdf5(hdf5_path)
+        self.perm = test_sim['permeability_log'][test_idx]
+        self.sat = test_sim['saturation'][test_idx]
+        self.pre = test_sim['pressure'][test_idx]
+        print(f"Test data loaded, with shape K: {self.perm.shape}, Sg: {self.sat.shape}, P: {self.pre.shape}")
         
-        ckpt_latent = ckpt["hidden_states"]["latents"]    # <n*t, dims>
-        self.latent_max, self.latent_min = torch.max(ckpt_latent), torch.min(ckpt_latent)
-        self.latent_max, self.latent_min = self.latent_max.to(self.device), self.latent_min.to(self.device)
+        if condition_variable == 'sat':
+            self.surrogate = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+            self.surrogate.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_sat.pth')['model_state_dict'])
+            self.surrogate.eval()
+            self.flag = 'sat'
+            self.foi = self.sat
+        elif condition_variable == 'pre':
+            self.surrogate = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+            self.surrogate.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_pre.pth')['model_state_dict'])
+            self.surrogate.eval()
+            self.flag = 'pre'
+            self.foi = self.pre
+        else:
+            self.surrogate = None
+            self.flag = 'perm'
+            self.foi = self.perm
         
-        normalize_records = torch.load(self.norm_record_path)
-        self.out_normalizer = Normalizer_ts(method="-11", dim=0)
-        self.out_normalizer.params = normalize_records["y_normalizer_params"]
+        tn = [1., 6., 12., 24., 36., 60., 7*12., 10*12., 15*12, 20*12]  # 10 time steps in months
+        ts = [t*86400*30 for t in tn]
+        normed_ts = norm(np.array(ts), retrieve_min_max('ts')[0], retrieve_min_max('ts')[1])
+        normed_ts = np.tile(normed_ts[:, None, None], (1, self.sat.shape[-2], self.sat.shape[-1]))    # <1, 64, 64>
+        self.normed_ts = torch.tensor(normed_ts, dtype=torch.float32).to(self.device)
+    
+    def surrogate_forward(self, data, pre_norm=False, out_unnorm=False, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        if pre_norm:
+            warnings.warn("UFNO pre_norm use warning: you are using prenorm for K, which should only be used when you are directly calling UFNO for evaluation, instead of diffusion sampling.")
+            data = norm(data, retrieve_min_max('perm')[0], retrieve_min_max('perm')[1])
+        batch_size = data.shape[0]
+        ts_expand = self.normed_ts.expand(batch_size, -1, -1, -1)    # <b, t, 64, 64>
+        data_expand = data.expand(-1, ts_expand.size(1), -1, -1)    # <b, c=t, 64, 64>
+        assert ts_expand.shape == data_expand.shape, f"UFNO input shapes mismatch: {ts_expand.shape}, {data_expand.shape}"
         
-        # with h5py.File(simdata_path, "r") as f:
-        #     # ! only apply to cartesian data
-        #     pressure = f["pressure"][simdata_idx, :, :, :-1, None].astype(np.float32)
-        #     saturation = f["saturation"][simdata_idx, :, :, :-1, None].astype(np.float32)
-        #     param = f["permeability_log"][simdata_idx, None, :, :-1, None].astype(np.float32)
-        # param = np.repeat(param, saturation.shape[1], axis=1)
-        # self.simdata = np.concatenate([pressure, saturation, param], axis=-1)    # <t, h, w, c=3>
-        # self.simdata = torch.tensor(self.simdata, dtype=torch.float32).to(self.device)    # <t, h, w, c=3>
-        # print(f"Simulation data loaded, with shape {self.simdata.shape}")
-        self.simdata = np.load(simdata_path)[simdata_idx]
-        print(f"Simulation data loaded, with shape {self.simdata.shape}")
+        # * surrogate model
+        # ! for UFNO, the input shape is <B, H, W, T, C>
+        x_surrogate = torch.stack((data_expand, ts_expand), dim=-1)    # <b, t, 64, 64, c=2>
+        x_surrogate = rearrange(x_surrogate, 'b t h w c -> b h w t c')
+        out_surrogate = self.surrogate(x_surrogate)    # <b, 64, 64, t=10>
+        if len(out_surrogate.shape) < 4:
+            out_surrogate = out_surrogate.unsqueeze(0)
+        if out_unnorm:
+            warnings.warn("UFNO out_unnorm use warning: you unnorming UFNO outputs, which should only be used when you are directly calling UFNO for evaluation, instead of diffusion sampling.")
+            out_surrogate = unnorm(out_surrogate, retrieve_min_max(f'{self.flag}')[0], retrieve_min_max(f'{self.flag}')[1])
+        return out_surrogate
+        
         
     def forward(self, data, **kwargs):
-        # * diffusion data: <b, c=1, t, l>  --> cnf in: <b*c*t, l>, unnorm
-        traj_num = data.shape[0]
-        time_steps = data.shape[2]
-        cnf_latent_in = rearrange(self._unnorm(data), "b c t l -> (b c t) l").to(self.device)    # <(b*t), l>
-        
-        # * use cnf to decode
-        cnf_coord_in = self.sparse_cartesian_coord().to(self.device)    # <h, w, coord_dim=2>
-        cnf_latent_in = cnf_latent_in.unsqueeze(1).unsqueeze(1)    # <(b*t), 1, 1 l>
-        cnf_coord_in = cnf_coord_in.unsqueeze(0)    # <1, h, w, 2>
-        assert len(cnf_latent_in.shape) == len(cnf_coord_in.shape) == 4, \
-            f"CNF Decoder input shape [{cnf_coord_in.shape}, {cnf_latent_in.shape}] mismatch, expected 4D tensor"
-        cnf_out = self.model(cnf_coord_in, cnf_latent_in)    # <(b*t), h, w, c=3>
-        
-        # * reshape and unnorm
-        cnf_out_traj = rearrange(cnf_out, "(b t) h w c-> b t h w c", b=traj_num, t=time_steps)    # <b, t, h, w, c>
-        # cnf_out_traj = self._unnorm_cnf(cnf_out_traj) #! change
-        assert cnf_out_traj.shape[:2] == (traj_num, time_steps), \
-            f"Expected cnf_out_traj shape ({traj_num}, {time_steps}, H, W, C), but got {cnf_out_traj.shape}"
-        
-        # * downsampling
-        cnf_out_traj_reshape = rearrange(cnf_out_traj, "b t h w c -> (b t) c h w")
-        if self.vanilla_flag:
-            down_cnf_out_traj = cnf_out_traj_reshape
+        # * diffusion data: <b, c=1, 64, 64>
+        if self.surrogate is not None:
+            out = self.surrogate_forward(data)
+            out = rearrange(out, 'b h w t -> b t h w')
         else:
-            down_cnf_out_traj = F.interpolate(cnf_out_traj_reshape, size=self.ds_size, mode='nearest')
-        output = rearrange(down_cnf_out_traj, "(b t) c h w -> b t h w c", b=traj_num, t=time_steps)
-        # 0:1 -- pressure
-        # 1:2 -- saturation
-        # 2:3 -- permeability
-        return output[:, :, ..., 0:2]    # <b, t, h, w, c=1>
-    
-    def _unnorm(self, norm_data):
-        # * for diffusion unnorm
-        return (norm_data + 1) * (self.latent_max - self.latent_min) / 2 + self.latent_min
+            out = data
 
-    def _unnorm_cnf(self, norm_data):
-        # * for cnf unnorm
-        unnormed_data = self.out_normalizer.denormalize(norm_data)
-        return unnormed_data
-    
-    def _norm_cnf(self, raw_data):
-        # * for cnf norm
-        normed_data = self.out_normalizer.normalize(raw_data)
-        return normed_data
-    
-    def _gene_cartesian_coord(self):
-        # generate the Cartesian coordinates
-        h = w = 64
-        H = W = 640
-        # h, w = 64, 63
-        # H, W = 640, 630
-        x_coord = np.linspace(0, H, h)
-        y_coord = np.linspace(0, W, w)
-        xx, yy = np.meshgrid(x_coord, y_coord, indexing='ij')
-        xy_coord = np.stack((xx, yy), axis=-1)
-        assert xy_coord.shape == (h, w, 2), f"Expected coord shape (h, w, 2), but got {xy_coord.shape}"
-        xy_coord = torch.tensor(xy_coord, dtype=torch.float32)
-        x_min, x_max = xy_coord.min(), xy_coord.max()
-        xy_coord = ((xy_coord - x_min) / (x_max - x_min)) * 2 - 1
-        return xy_coord
-
-    def sparse_cartesian_coord(self):
-        '''retrieve the measuring coordinates, maybe used for visualization'''
-        xy_coord = self._gene_cartesian_coord()
-        return xy_coord
-        
-    def sparse_cartesian_measurement(self):
-        '''will be used for || y - A * x ||'''
-        # data = self.simdata   # <t, h, w, c=3>
-        data = self._norm_cnf(torch.tensor(self.simdata))    # <t, h, w, c=3>
-        # data = torch.tensor(self.simdata, dtype=torch.float32).to(self.device)    # <t, h, w, c=3>
-        data_reshape = rearrange(data, "t h w c -> t c h w")
         if self.vanilla_flag:
-            ds_measurements = data_reshape
+            down = out
         else:
-            ds_measurements = F.interpolate(data_reshape, size=self.ds_size, mode='nearest')    # <t, c, ds_h, ds_w>
-        out_measurements = rearrange(ds_measurements, "t c h w -> t h w c")
-        return out_measurements.unsqueeze(0).to(self.device)[:, :, ..., 0:2]    # <1, t, h, w, c=1>
+            down = F.interpolate(out, size=self.ds_size, mode='nearest')
+        # print(f'forward output shape: {down.shape}')
+        return down
+        
+    def measurement(self):
+        normed_measurement = norm(self.foi, retrieve_min_max(f'{self.flag}')[0], retrieve_min_max(f'{self.flag}')[1])
+        normed_measurement = torch.tensor(normed_measurement, dtype=torch.float32).to(self.device)[None, ...]
+        if len(normed_measurement.shape) == 3:
+            normed_measurement = normed_measurement.unsqueeze(0)
+        assert len(normed_measurement.shape) == 4, f"Expected 4D tensor, got {normed_measurement.shape} tensor"
+        if self.vanilla_flag:
+            self.down = normed_measurement
+        else:
+            self.down = F.interpolate(normed_measurement, size=self.ds_size, mode='nearest')
+        # print(f'Measurement shape: {self.down.shape}')
+        return self.down
+    
+    def retrieve_reference(self):
+        reference = {
+            'condition': unnorm(self.down, retrieve_min_max(f'{self.flag}')[0], retrieve_min_max(f'{self.flag}')[1]).detach().cpu().squeeze().numpy(),
+            'perm': self.perm,
+            'sat': self.sat,
+            'pre': self.pre,
+        }
+        print("Retrieving condition and reference:")
+        for key, value in reference.items():
+            print(f"{key}: shape {value.shape}")
+        return reference
 
 
-# ------------------------- damaged measurement -------------------------
-
-@register_operator(name='cartesian_damaged_measurement')
-class CartesianOperatorDM(NonLinearOperator):
+@register_operator(name='horizontal_sparse_well')
+class horizontal_sparse_well(NonLinearOperator):
     def __init__(self,
                 device,
-                ckpt_path,
-                norm_record_path,
-                simdata_path,
-                simdata_idx,
-                top_left_idx,
-                bottom_right_idx,
+                hdf5_path,
+                test_idx,
+                well_num,
+                with_perm=False,
                 ) -> None:
         
         self.device = device
-        self.norm_record_path = norm_record_path
-        assert isinstance(top_left_idx, tuple) and isinstance(bottom_right_idx, tuple), \
-            f"Expected top_left_idx and bottom_right_idx to be tuples, but got {type(top_left_idx)} and {type(bottom_right_idx)}"
-        self.query_points = self._generate_query_idx(top_left_idx, bottom_right_idx)    # todo: specify ur damaged area
+        if well_num == 1:
+            self.query_idx = [[40, 40]]
+        elif well_num == 4:
+            self.query_idx = [[40, 40], [24, 24], [24, 40], [40, 24]]
+        elif well_num == 8:
+            self.query_idx = [[24, 24], [24, 32], [24, 40],
+                              [32, 24], [32, 40],
+                              [40, 24], [40, 32], [40, 40]]
+        else:
+            raise ValueError("Well number must be either 1, 4, or 8.")
+        self.with_perm = with_perm
         
-        ckpt = torch.load(ckpt_path)
-        self.model = SIRENAutodecoder_mdf_film(omega_0=10,
-                                                in_coord_features=2,
-                                                in_latent_features=256,
-                                                out_features=3,
-                                                num_hidden_layers=5,
-                                                hidden_features=128)    # todo: specify ur neural field network
-        self.model.load_state_dict(ckpt['model_state_dict'])
-        self.model.eval() 
-        self.model.to(device)
+        test_sim = load_test_hdf5(hdf5_path)
+        self.perm = test_sim['permeability_log'][test_idx]
+        self.sat = test_sim['saturation'][test_idx]
+        self.pre = test_sim['pressure'][test_idx]
+        print(f"Test data loaded, with shape K: {self.perm.shape}, Sg: {self.sat.shape}, P: {self.pre.shape}")
         
-        ckpt_latent = ckpt["hidden_states"]["latents"]    # <n*t, dims>
-        self.latent_max, self.latent_min = torch.max(ckpt_latent), torch.min(ckpt_latent)
-        self.latent_max, self.latent_min = self.latent_max.to(self.device), self.latent_min.to(self.device)
+        self.surrogate_sg = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_sg.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_sat.pth')['model_state_dict'])
+        self.surrogate_sg.eval()
+
+        self.surrogate_p = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_p.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_pre.pth')['model_state_dict'])
+        self.surrogate_p.eval()
         
-        normalize_records = torch.load(self.norm_record_path)
-        self.out_normalizer = Normalizer_ts(method="-11", dim=0)
-        self.out_normalizer.params = normalize_records["y_normalizer_params"]
+        tn = [1., 6., 12., 24., 36., 60., 7*12., 10*12., 15*12, 20*12]  # 10 time steps in months
+        ts = [t*86400*30 for t in tn]
+        normed_ts = norm(np.array(ts), retrieve_min_max('ts')[0], retrieve_min_max('ts')[1])
+        normed_ts = np.tile(normed_ts[:, None, None], (1, self.sat.shape[-2], self.sat.shape[-1]))    # <1, 64, 64>
+        self.normed_ts = torch.tensor(normed_ts, dtype=torch.float32).to(self.device)
+    
+    def surrogate_forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        batch_size = data.shape[0]
+        ts_expand = self.normed_ts.expand(batch_size, -1, -1, -1)    # <b, t, 64, 64>
+        data_expand = data.expand(-1, ts_expand.size(1), -1, -1)    # <b, c=t, 64, 64>
+        assert ts_expand.shape == data_expand.shape, f"UFNO input shapes mismatch: {ts_expand.shape}, {data_expand.shape}"
         
-        with h5py.File(simdata_path, "r") as f:
-            # ! only apply to cartesian data
-            pressure = f["pressure"][simdata_idx, :, :, :-1, None].astype(np.float32)
-            saturation = f["saturation"][simdata_idx, :, :, :-1, None].astype(np.float32)
-            param = f["permeability_log"][simdata_idx, None, :, :-1, None].astype(np.float32)
-        param = np.repeat(param, saturation.shape[1], axis=1)
-        self.simdata = np.concatenate([pressure, saturation, param], axis=-1)    # <t, h, w, c=3>
-        self.simdata = torch.tensor(self.simdata, dtype=torch.float32).to(self.device)    # <t, h, w, c=3>
-        print(f"Simulation data loaded, with shape {self.simdata.shape}")
+        # * surrogate model
+        # ! for UFNO, the input shape is <B, H, W, T, C>
+        x_surrogate = torch.stack((data_expand, ts_expand), dim=-1)    # <b, t, 64, 64, c=2>
+        x_surrogate = rearrange(x_surrogate, 'b t h w c -> b h w t c')
+        out_surrogate_sg = self.surrogate_sg(x_surrogate)    # <b, 64, 64, t=10>
+        out_surrogate_p = self.surrogate_p(x_surrogate)    # <b, 64, 64, t=10>
+        
+        if len(out_surrogate_sg.shape) < 4:
+            out_surrogate_sg = out_surrogate_sg.unsqueeze(0)
+        if len(out_surrogate_p.shape) < 4:
+            out_surrogate_p = out_surrogate_p.unsqueeze(0)
+        return out_surrogate_sg, out_surrogate_p
+        
         
     def forward(self, data, **kwargs):
-        # * diffusion data: <b, c=1, t, l>  --> cnf in: <b*c*t, l>, unnorm
-        traj_num = data.shape[0]
-        time_steps = data.shape[2]
-        cnf_latent_in = rearrange(self._unnorm(data), "b c t l -> (b c t) l").to(self.device)    # <(b*t), l>
+        # * diffusion data: <b, c=1, 64, 64>
+        out_sg, out_p = self.surrogate_forward(data)
+        out_sg = rearrange(out_sg, 'b h w t -> b t h w')
+        out_p = rearrange(out_p, 'b h w t -> b t h w')
+        # perm = unnorm(data, retrieve_min_max('perm')[0], retrieve_min_max('perm')[1])
+        perm = data.expand(-1, out_sg.size(1), -1, -1)
+        assert out_sg.shape == out_p.shape == perm.shape, f"Variables shapes mismatch: {out_sg.shape}, {out_p.shape}, {perm.shape}"
+        if self.with_perm:
+            whole = torch.stack([out_sg, out_p, perm], dim=1)    # <b, c=3, t, h, w>
+        else:
+            whole = torch.stack([out_sg, out_p], dim=1)    # <b, c=2, t, h, w>
+        sparse = []
+        for h_idx, w_idx in self.query_idx:
+            sparse.append(whole[:, :, :, h_idx, w_idx])    # list of <b, c, t>
+        sparse = torch.stack(sparse, dim=0).permute(1, 2, 3, 0)    # <b, c, t, well_num>
+        return sparse
         
-        # * use cnf to decode
-        cnf_coord_in = self.sparse_cartesian_coord().to(self.device)    # <N, coord_dim=2>
-        cnf_latent_in = cnf_latent_in.unsqueeze(1)    # <(b*t), 1, l>
-        cnf_coord_in = cnf_coord_in.unsqueeze(0)    # <1, N, 2>
-        cnf_out = self.model(cnf_coord_in, cnf_latent_in)    # <(b*t), N, c=3>
-        
-        # * reshape and unnorm
-        cnf_out_traj = rearrange(cnf_out, "(b t) N c-> b t N c", b=traj_num, t=time_steps)    # <b, t, N, c>
-        cnf_out_traj = self._unnorm_cnf(cnf_out_traj) #! change
-        assert cnf_out_traj.shape[:-1] == (traj_num, time_steps, len(self.query_points)), \
-            f"Expected cnf_out_traj shape ({traj_num}, {time_steps}, {len(self.query_points)}, C), but got {cnf_out_traj.shape}"
-
-        return cnf_out_traj
+    def measurement(self):
+        norm_sat = torch.tensor(norm(self.sat, retrieve_min_max('sat')[0], retrieve_min_max('sat')[1])).to(self.device)
+        norm_pre = torch.tensor(norm(self.pre, retrieve_min_max('pre')[0], retrieve_min_max('pre')[1])).to(self.device)
+        norm_perm = torch.tensor(norm(self.perm, retrieve_min_max('perm')[0], retrieve_min_max('perm')[1])).to(self.device)
+        norm_perm = norm_perm.expand_as(norm_sat)
+        assert norm_sat.shape == norm_pre.shape == norm_perm.shape, f"Variables shapes mismatch: {norm_sat.shape}, {norm_pre.shape}, {norm_perm.shape}"
+        if self.with_perm:
+            whole = torch.stack([norm_sat, norm_pre, norm_perm], dim=0)    # <c=3, t, h, w>
+        else:
+            whole = torch.stack([norm_sat, norm_pre], dim=0)    # <c=2, t, h, w>
+        sparse = []
+        for h_idx, w_idx in self.query_idx:
+            sparse.append(whole[:, :, h_idx, w_idx])    # list of <c, t>
+        sparse = torch.stack(sparse, dim=0).permute(1, 2, 0)    # <c, t, well_num>
+        sparse = sparse.unsqueeze(0)    # <1, c, t, well_num>
+        return sparse
     
-    def _unnorm(self, norm_data):
-        # * for diffusion unnorm
-        return (norm_data + 1) * (self.latent_max - self.latent_min) / 2 + self.latent_min
+    def retrieve_reference(self):
+        reference = {
+            'perm': self.perm,
+            'sat': self.sat,
+            'pre': self.pre,
+        }
+        print("Retrieving reference:")
+        for key, value in reference.items():
+            print(f"{key}: shape {value.shape}")
+        return reference
 
-    def _unnorm_cnf(self, norm_data):
-        # * for cnf unnorm
-        unnormed_data = self.out_normalizer.denormalize(norm_data)
-        return unnormed_data
+
+# =====================================
+# Vertical case
+# =====================================
+@register_operator(name='vertical_sparse_well')
+class vertical_sparse_well(NonLinearOperator):
+    def __init__(self,
+                device,
+                hdf5_path,
+                test_idx,
+                end_t_idx=4,
+                with_perm=False,
+                ) -> None:
+        
+        self.device = device
+        self.with_perm = with_perm
+        self.end_t_idx = end_t_idx
+        
+        test_sim = load_test_hdf5_vertical(hdf5_path)
+        self.perm = test_sim['permeability_log'][test_idx]
+        self.sat = test_sim['saturation'][test_idx]
+        self.pre = test_sim['pressure'][test_idx]
+        print(f"Test data loaded, with shape K: {self.perm.shape}, Sg: {self.sat.shape}, P: {self.pre.shape}")
+        
+        self.surrogate_sg = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_sg.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_sat_vertical.pth')['model_state_dict'])
+        self.surrogate_sg.eval()
+
+        self.surrogate_p = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_p.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_pre_vertical.pth')['model_state_dict'])
+        self.surrogate_p.eval()
+        
+        tn = [1*12, 2*12, 3*12, 4*12, 5*12, 6*12, 7*12, 8*12, 9*12, 10*12]  # 10 time steps in months
+        ts = [t*86400*30. for t in tn]
+        normed_ts = norm(np.array(ts), retrieve_min_max('ts_vertical')[0], retrieve_min_max('ts_vertical')[1])
+        normed_ts = np.tile(normed_ts[:, None, None], (1, self.sat.shape[-2], self.sat.shape[-1]))    # <1, 64, 64>
+        self.normed_ts = torch.tensor(normed_ts, dtype=torch.float32).to(self.device)
     
-    def _generate_query_idx(self, top_left_idx, bottom_right_idx):
-        i1, j1 = top_left_idx
-        i2, j2 = bottom_right_idx
-        ii, jj = np.meshgrid(np.arange(i1, i2), np.arange(j1, j2), indexing='ij')
-        query_idx = list(zip(ii.flatten(), jj.flatten()))  # list of (i, j)
-        return query_idx
+    def surrogate_forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        batch_size = data.shape[0]
+        ts_expand = self.normed_ts.expand(batch_size, -1, -1, -1)    # <b, t, 64, 64>
+        data_expand = data.expand(-1, ts_expand.size(1), -1, -1)    # <b, c=t, 64, 64>
+        assert ts_expand.shape == data_expand.shape, f"UFNO input shapes mismatch: {ts_expand.shape}, {data_expand.shape}"
         
-    def _gene_cartesian_coord(self):
-        # generate the Cartesian coordinates
-        h = w = 64
-        H = W = 640
-        # h, w = 64, 63
-        # H, W = 640, 630
-        x_coord = np.linspace(0, H, h)
-        y_coord = np.linspace(0, W, w)
-        xx, yy = np.meshgrid(x_coord, y_coord, indexing='ij')
-        xy_coord = np.stack((xx, yy), axis=-1)
-        assert xy_coord.shape == (h, w, 2), f"Expected coord shape (h, w, 2), but got {xy_coord.shape}"
-        xy_coord = torch.tensor(xy_coord, dtype=torch.float32)
-        x_min, x_max = xy_coord.min(), xy_coord.max()
-        xy_coord = ((xy_coord - x_min) / (x_max - x_min)) * 2 - 1
-        return xy_coord
-
-    def sparse_cartesian_coord(self):
-        '''retrieve the measuring coordinates, maybe used for visualization'''
-        xy_coord = self._gene_cartesian_coord()
-        query_pts = self.query_points    # ur query points
-        query_coord = torch.stack([xy_coord[i, j] for (i, j) in query_pts], dim=0).float()    # <N, 2>
-        assert query_coord.shape == (len(query_pts), 2), f"Expected query coord shape ({len(query_pts)}, 2), but got {query_coord.shape}"
-        return query_coord
+        # * surrogate model
+        # ! for UFNO, the input shape is <B, H, W, T, C>
+        x_surrogate = torch.stack((data_expand, ts_expand), dim=-1)    # <b, t, 64, 64, c=2>
+        x_surrogate = rearrange(x_surrogate, 'b t h w c -> b h w t c')
+        out_surrogate_sg = self.surrogate_sg(x_surrogate)    # <b, 64, 64, t=10>
+        out_surrogate_p = self.surrogate_p(x_surrogate)    # <b, 64, 64, t=10>
         
-    def sparse_cartesian_measurement(self):
-        '''will be used for || y - A * x ||, and visualizing the true param'''
-        # data = self.simdata    # <t, h, w, c=3>
-        data = self._unnorm_cnf(torch.tensor(self.simdata))    # <t, h, w, c=3>
-        q_coord = self.query_points
-        measurements = torch.tensor([[data[t, i, j, :-1] for (i, j) in q_coord] for t in range(data.shape[0])], dtype=torch.float32)  # <t, N, c=?>
-        assert measurements.shape == (data.shape[0], len(q_coord)), \
-            f"Expected measurements shape ({data.shape[0]}, {len(q_coord)}), but got {measurements.shape}"
-        return measurements.unsqueeze(0).to(self.device)
+        if len(out_surrogate_sg.shape) < 4:
+            out_surrogate_sg = out_surrogate_sg.unsqueeze(0)
+        if len(out_surrogate_p.shape) < 4:
+            out_surrogate_p = out_surrogate_p.unsqueeze(0)
+        return out_surrogate_sg, out_surrogate_p
+        
+        
+    def forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        out_sg, out_p = self.surrogate_forward(data)
+        out_sg = rearrange(out_sg, 'b h w t -> b t h w')
+        out_p = rearrange(out_p, 'b h w t -> b t h w')
+        # perm = unnorm(data, retrieve_min_max('perm')[0], retrieve_min_max('perm')[1])
+        perm = data.expand(-1, out_sg.size(1), -1, -1)
+        assert out_sg.shape == out_p.shape == perm.shape, f"Variables shapes mismatch: {out_sg.shape}, {out_p.shape}, {perm.shape}"
+        if self.with_perm:
+            whole = torch.stack([out_sg, out_p, perm], dim=1)    # <b, c=3, t, h, w>
+        else:
+            whole = torch.stack([out_sg, out_p], dim=1)    # <b, c=2, t, h, w>
+
+        well_1 = whole[:, :, :self.end_t_idx, :, 24]
+        well_2 = whole[:, :, :self.end_t_idx, :, 32]
+        well_3 = whole[:, :, :self.end_t_idx, :, 40]    # <b, c, t, h>
+        
+        sparse = torch.cat([well_1, well_2, well_3], dim=-1)    # <b, c, t, 3*h>
+        return sparse
+        
+    def measurement(self):
+        norm_sat = torch.tensor(norm(self.sat, retrieve_min_max('sat_vertical')[0], retrieve_min_max('sat_vertical')[1])).to(self.device)
+        norm_pre = torch.tensor(norm(self.pre, retrieve_min_max('pre_vertical')[0], retrieve_min_max('pre_vertical')[1])).to(self.device)
+        norm_perm = torch.tensor(norm(self.perm, retrieve_min_max('perm_vertical')[0], retrieve_min_max('perm_vertical')[1])).to(self.device)
+        norm_perm = norm_perm.expand_as(norm_sat)
+        assert norm_sat.shape == norm_pre.shape == norm_perm.shape, f"Variables shapes mismatch: {norm_sat.shape}, {norm_pre.shape}, {norm_perm.shape}"
+        if self.with_perm:
+            whole = torch.stack([norm_sat, norm_pre, norm_perm], dim=0)    # <c=3, t, h, w>
+        else:
+            whole = torch.stack([norm_sat, norm_pre], dim=0)    # <c=2, t, h, w>
+            
+        well_1 = whole[:, :self.end_t_idx, :, 24]
+        well_2 = whole[:, :self.end_t_idx, :, 32]
+        well_3 = whole[:, :self.end_t_idx, :, 40]    # <c, t, h>
+        
+        sparse = torch.cat([well_1, well_2, well_3], dim=-1)    # <c, t, 3*h>
+        assert sparse.size(-1) == 3 * whole.size(-1), f"Expected last dim size {3 * whole.size(-1)}, got {sparse.size(-1)}"
+        sparse = sparse.unsqueeze(0)    # <1, c, t, 3*h>
+        print(f'Measurement shape: {sparse.shape}')
+        return sparse
+    
+    def retrieve_reference(self):
+        reference = {
+            'perm': self.perm,
+            'sat': self.sat,
+            'pre': self.pre,
+        }
+        print("Retrieving reference:")
+        for key, value in reference.items():
+            print(f"{key}: shape {value.shape}")
+        return reference
 
 
+@register_operator(name='vertical_sparse_well_noise')
+class vertical_sparse_well_noise(NonLinearOperator):
+    def __init__(self,
+                device,
+                hdf5_path,
+                test_idx,
+                end_t_idx=4,
+                with_perm=False,
+                ) -> None:
+        
+        self.device = device
+        self.with_perm = with_perm
+        self.end_t_idx = end_t_idx
+        
+        test_sim = load_test_hdf5_vertical(hdf5_path)
+        self.perm = test_sim['permeability_log'][test_idx]
+        self.sat = test_sim['saturation'][test_idx]
+        self.pre = test_sim['pressure'][test_idx]
+        print(f"Test data loaded, with shape K: {self.perm.shape}, Sg: {self.sat.shape}, P: {self.pre.shape}")
+        
+        self.surrogate_sg = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_sg.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_sat_vertical.pth')['model_state_dict'])
+        self.surrogate_sg.eval()
+
+        self.surrogate_p = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_p.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_pre_vertical.pth')['model_state_dict'])
+        self.surrogate_p.eval()
+        
+        tn = [1*12, 2*12, 3*12, 4*12, 5*12, 6*12, 7*12, 8*12, 9*12, 10*12]  # 10 time steps in months
+        ts = [t*86400*30. for t in tn]
+        normed_ts = norm(np.array(ts), retrieve_min_max('ts_vertical')[0], retrieve_min_max('ts_vertical')[1])
+        normed_ts = np.tile(normed_ts[:, None, None], (1, self.sat.shape[-2], self.sat.shape[-1]))    # <1, 64, 64>
+        self.normed_ts = torch.tensor(normed_ts, dtype=torch.float32).to(self.device)
+    
+    def surrogate_forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        batch_size = data.shape[0]
+        ts_expand = self.normed_ts.expand(batch_size, -1, -1, -1)    # <b, t, 64, 64>
+        data_expand = data.expand(-1, ts_expand.size(1), -1, -1)    # <b, c=t, 64, 64>
+        assert ts_expand.shape == data_expand.shape, f"UFNO input shapes mismatch: {ts_expand.shape}, {data_expand.shape}"
+        
+        # * surrogate model
+        # ! for UFNO, the input shape is <B, H, W, T, C>
+        x_surrogate = torch.stack((data_expand, ts_expand), dim=-1)    # <b, t, 64, 64, c=2>
+        x_surrogate = rearrange(x_surrogate, 'b t h w c -> b h w t c')
+        out_surrogate_sg = self.surrogate_sg(x_surrogate)    # <b, 64, 64, t=10>
+        out_surrogate_p = self.surrogate_p(x_surrogate)    # <b, 64, 64, t=10>
+        
+        if len(out_surrogate_sg.shape) < 4:
+            out_surrogate_sg = out_surrogate_sg.unsqueeze(0)
+        if len(out_surrogate_p.shape) < 4:
+            out_surrogate_p = out_surrogate_p.unsqueeze(0)
+        return out_surrogate_sg, out_surrogate_p
+        
+        
+    def forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        out_sg, out_p = self.surrogate_forward(data)
+        out_sg = rearrange(out_sg, 'b h w t -> b t h w')
+        out_p = rearrange(out_p, 'b h w t -> b t h w')
+        # perm = unnorm(data, retrieve_min_max('perm')[0], retrieve_min_max('perm')[1])
+        perm = data.expand(-1, out_sg.size(1), -1, -1)
+        assert out_sg.shape == out_p.shape == perm.shape, f"Variables shapes mismatch: {out_sg.shape}, {out_p.shape}, {perm.shape}"
+        if self.with_perm:
+            whole = torch.stack([out_sg, out_p, perm], dim=1)    # <b, c=3, t, h, w>
+        else:
+            whole = torch.stack([out_sg, out_p], dim=1)    # <b, c=2, t, h, w>
+
+        well_1 = whole[:, :, :self.end_t_idx, :, 24]
+        well_2 = whole[:, :, :self.end_t_idx, :, 32]
+        well_3 = whole[:, :, :self.end_t_idx, :, 40]    # <b, c, t, h>
+        
+        sparse = torch.cat([well_1, well_2, well_3], dim=-1)    # <b, c, t, 3*h>
+        return sparse
+        
+    def measurement(self):
+        sat = self.sat + np.random.randn(*self.sat.shape) * 0.1  # Adding noise to saturation
+        pre = self.pre + np.random.randn(*self.pre.shape) * (19e6 * 0.1)  # Adding noise to pressure
+        perm = self.perm + np.random.randn(*self.perm.shape) * (4.5 * 0.1)  # Adding noise to permeability
+        
+        norm_sat = torch.tensor(norm(sat, retrieve_min_max('sat_vertical')[0], retrieve_min_max('sat_vertical')[1])).to(self.device)
+        norm_pre = torch.tensor(norm(pre, retrieve_min_max('pre_vertical')[0], retrieve_min_max('pre_vertical')[1])).to(self.device)
+        norm_perm = torch.tensor(norm(perm, retrieve_min_max('perm_vertical')[0], retrieve_min_max('perm_vertical')[1])).to(self.device)
+        norm_perm = norm_perm.expand_as(norm_sat)
+        assert norm_sat.shape == norm_pre.shape == norm_perm.shape, f"Variables shapes mismatch: {norm_sat.shape}, {norm_pre.shape}, {norm_perm.shape}"
+        if self.with_perm:
+            whole = torch.stack([norm_sat, norm_pre, norm_perm], dim=0)    # <c=3, t, h, w>
+        else:
+            whole = torch.stack([norm_sat, norm_pre], dim=0)    # <c=2, t, h, w>
+            
+        well_1 = whole[:, :self.end_t_idx, :, 24]
+        well_2 = whole[:, :self.end_t_idx, :, 32]
+        well_3 = whole[:, :self.end_t_idx, :, 40]    # <c, t, h>
+        
+        sparse = torch.cat([well_1, well_2, well_3], dim=-1)    # <c, t, 3*h>
+        assert sparse.size(-1) == 3 * whole.size(-1), f"Expected last dim size {3 * whole.size(-1)}, got {sparse.size(-1)}"
+        sparse = sparse.unsqueeze(0)    # <1, c, t, 3*h>
+        print(f'Measurement shape: {sparse.shape}')
+        return sparse
+    
+    def retrieve_reference(self):
+        reference = {
+            'perm': self.perm,
+            'sat': self.sat,
+            'pre': self.pre,
+        }
+        print("Retrieving reference:")
+        for key, value in reference.items():
+            print(f"{key}: shape {value.shape}")
+        return reference
+
+
+@register_operator(name='vertical_sparse_well_5')
+class vertical_sparse_well_5(NonLinearOperator):
+    def __init__(self,
+                device,
+                hdf5_path,
+                test_idx,
+                end_t_idx=4,
+                with_perm=False,
+                ) -> None:
+        
+        self.device = device
+        self.with_perm = with_perm
+        self.end_t_idx = end_t_idx
+        
+        test_sim = load_test_hdf5_vertical(hdf5_path)
+        self.perm = test_sim['permeability_log'][test_idx]
+        self.sat = test_sim['saturation'][test_idx]
+        self.pre = test_sim['pressure'][test_idx]
+        print(f"Test data loaded, with shape K: {self.perm.shape}, Sg: {self.sat.shape}, P: {self.pre.shape}")
+        
+        self.surrogate_sg = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_sg.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_sat_vertical.pth')['model_state_dict'])
+        self.surrogate_sg.eval()
+
+        self.surrogate_p = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_p.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_pre_vertical.pth')['model_state_dict'])
+        self.surrogate_p.eval()
+        
+        tn = [1*12, 2*12, 3*12, 4*12, 5*12, 6*12, 7*12, 8*12, 9*12, 10*12]  # 10 time steps in months
+        ts = [t*86400*30. for t in tn]
+        normed_ts = norm(np.array(ts), retrieve_min_max('ts_vertical')[0], retrieve_min_max('ts_vertical')[1])
+        normed_ts = np.tile(normed_ts[:, None, None], (1, self.sat.shape[-2], self.sat.shape[-1]))    # <1, 64, 64>
+        self.normed_ts = torch.tensor(normed_ts, dtype=torch.float32).to(self.device)
+    
+    def surrogate_forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        batch_size = data.shape[0]
+        ts_expand = self.normed_ts.expand(batch_size, -1, -1, -1)    # <b, t, 64, 64>
+        data_expand = data.expand(-1, ts_expand.size(1), -1, -1)    # <b, c=t, 64, 64>
+        assert ts_expand.shape == data_expand.shape, f"UFNO input shapes mismatch: {ts_expand.shape}, {data_expand.shape}"
+        
+        # * surrogate model
+        # ! for UFNO, the input shape is <B, H, W, T, C>
+        x_surrogate = torch.stack((data_expand, ts_expand), dim=-1)    # <b, t, 64, 64, c=2>
+        x_surrogate = rearrange(x_surrogate, 'b t h w c -> b h w t c')
+        out_surrogate_sg = self.surrogate_sg(x_surrogate)    # <b, 64, 64, t=10>
+        out_surrogate_p = self.surrogate_p(x_surrogate)    # <b, 64, 64, t=10>
+        
+        if len(out_surrogate_sg.shape) < 4:
+            out_surrogate_sg = out_surrogate_sg.unsqueeze(0)
+        if len(out_surrogate_p.shape) < 4:
+            out_surrogate_p = out_surrogate_p.unsqueeze(0)
+        return out_surrogate_sg, out_surrogate_p
+        
+        
+    def forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        out_sg, out_p = self.surrogate_forward(data)
+        out_sg = rearrange(out_sg, 'b h w t -> b t h w')
+        out_p = rearrange(out_p, 'b h w t -> b t h w')
+        # perm = unnorm(data, retrieve_min_max('perm')[0], retrieve_min_max('perm')[1])
+        perm = data.expand(-1, out_sg.size(1), -1, -1)
+        assert out_sg.shape == out_p.shape == perm.shape, f"Variables shapes mismatch: {out_sg.shape}, {out_p.shape}, {perm.shape}"
+        if self.with_perm:
+            whole = torch.stack([out_sg, out_p, perm], dim=1)    # <b, c=3, t, h, w>
+        else:
+            whole = torch.stack([out_sg, out_p], dim=1)    # <b, c=2, t, h, w>
+
+        well_1 = whole[:, :, :self.end_t_idx, :, 24]
+        well_2 = whole[:, :, :self.end_t_idx, :, 32]
+        well_3 = whole[:, :, :self.end_t_idx, :, 40]    # <b, c, t, h>
+        well_4 = whole[:, :, :self.end_t_idx, :, 48]
+        well_5 = whole[:, :, :self.end_t_idx, :, 16]
+        
+        sparse = torch.cat([well_1, well_2, well_3, well_4, well_5], dim=-1)    # <b, c, t, 3*h>
+        return sparse
+        
+    def measurement(self):
+        norm_sat = torch.tensor(norm(self.sat, retrieve_min_max('sat_vertical')[0], retrieve_min_max('sat_vertical')[1])).to(self.device)
+        norm_pre = torch.tensor(norm(self.pre, retrieve_min_max('pre_vertical')[0], retrieve_min_max('pre_vertical')[1])).to(self.device)
+        norm_perm = torch.tensor(norm(self.perm, retrieve_min_max('perm_vertical')[0], retrieve_min_max('perm_vertical')[1])).to(self.device)
+        norm_perm = norm_perm.expand_as(norm_sat)
+        assert norm_sat.shape == norm_pre.shape == norm_perm.shape, f"Variables shapes mismatch: {norm_sat.shape}, {norm_pre.shape}, {norm_perm.shape}"
+        if self.with_perm:
+            whole = torch.stack([norm_sat, norm_pre, norm_perm], dim=0)    # <c=3, t, h, w>
+        else:
+            whole = torch.stack([norm_sat, norm_pre], dim=0)    # <c=2, t, h, w>
+            
+        well_1 = whole[:, :self.end_t_idx, :, 24]
+        well_2 = whole[:, :self.end_t_idx, :, 32]
+        well_3 = whole[:, :self.end_t_idx, :, 40]    # <c, t, h>
+        well_4 = whole[:, :self.end_t_idx, :, 48]
+        well_5 = whole[:, :self.end_t_idx, :, 16]
+        
+        sparse = torch.cat([well_1, well_2, well_3, well_4, well_5], dim=-1)    # <c, t, 3*h>
+        assert sparse.size(-1) == 5 * whole.size(-1), f"Expected last dim size {5 * whole.size(-1)}, got {sparse.size(-1)}"
+        sparse = sparse.unsqueeze(0)    # <1, c, t, 3*h>
+        print(f'Measurement shape: {sparse.shape}')
+        return sparse
+    
+    def retrieve_reference(self):
+        reference = {
+            'perm': self.perm,
+            'sat': self.sat,
+            'pre': self.pre,
+        }
+        print("Retrieving reference:")
+        for key, value in reference.items():
+            print(f"{key}: shape {value.shape}")
+        return reference
+
+
+@register_operator(name='vertical_inpainting')
+class vertical_inpainting(NonLinearOperator):
+    def __init__(self,
+                device,
+                hdf5_path,
+                test_idx,
+                condition_variable
+                ) -> None:
+        
+        self.device = device
+        self.condition_variable = condition_variable
+        
+        test_sim = load_test_hdf5_vertical(hdf5_path)
+        self.perm = test_sim['permeability_log'][test_idx]
+        self.sat = test_sim['saturation'][test_idx]
+        self.pre = test_sim['pressure'][test_idx]
+        print(f"Test data loaded, with shape K: {self.perm.shape}, Sg: {self.sat.shape}, P: {self.pre.shape}")
+        
+        self.surrogate_sg = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_sg.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_sat_vertical.pth')['model_state_dict'])
+        self.surrogate_sg.eval()
+
+        self.surrogate_p = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_p.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_pre_vertical.pth')['model_state_dict'])
+        self.surrogate_p.eval()
+        
+        tn = [1*12, 2*12, 3*12, 4*12, 5*12, 6*12, 7*12, 8*12, 9*12, 10*12]  # 10 time steps in months
+        ts = [t*86400*30. for t in tn]
+        normed_ts = norm(np.array(ts), retrieve_min_max('ts_vertical')[0], retrieve_min_max('ts_vertical')[1])
+        normed_ts = np.tile(normed_ts[:, None, None], (1, self.sat.shape[-2], self.sat.shape[-1]))    # <1, 64, 64>
+        self.normed_ts = torch.tensor(normed_ts, dtype=torch.float32).to(self.device)
+    
+    def surrogate_forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        batch_size = data.shape[0]
+        ts_expand = self.normed_ts.expand(batch_size, -1, -1, -1)    # <b, t, 64, 64>
+        data_expand = data.expand(-1, ts_expand.size(1), -1, -1)    # <b, c=t, 64, 64>
+        assert ts_expand.shape == data_expand.shape, f"UFNO input shapes mismatch: {ts_expand.shape}, {data_expand.shape}"
+        
+        # * surrogate model
+        # ! for UFNO, the input shape is <B, H, W, T, C>
+        x_surrogate = torch.stack((data_expand, ts_expand), dim=-1)    # <b, t, 64, 64, c=2>
+        x_surrogate = rearrange(x_surrogate, 'b t h w c -> b h w t c')
+        out_surrogate_sg = self.surrogate_sg(x_surrogate)    # <b, 64, 64, t=10>
+        out_surrogate_p = self.surrogate_p(x_surrogate)    # <b, 64, 64, t=10>
+        
+        if len(out_surrogate_sg.shape) < 4:
+            out_surrogate_sg = out_surrogate_sg.unsqueeze(0)
+        if len(out_surrogate_p.shape) < 4:
+            out_surrogate_p = out_surrogate_p.unsqueeze(0)
+        return out_surrogate_sg, out_surrogate_p
+        
+        
+    def forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        out_sg, out_p = self.surrogate_forward(data)
+        out_sg = rearrange(out_sg, 'b h w t -> b t h w')
+        out_p = rearrange(out_p, 'b h w t -> b t h w')
+        # perm = unnorm(data, retrieve_min_max('perm')[0], retrieve_min_max('perm')[1])
+        perm = data.expand(-1, out_sg.size(1), -1, -1)
+        assert out_sg.shape == out_p.shape == perm.shape, f"Variables shapes mismatch: {out_sg.shape}, {out_p.shape}, {perm.shape}"
+        
+        mask = torch.ones_like(out_sg)
+        mask[:, :, 16:48, 16:48] = 0.0  # Central 32x32 region
+        
+        if self.condition_variable == 'sat':
+            out = out_sg
+        elif self.condition_variable == 'pre':
+            out = out_p
+        elif self.condition_variable == 'perm':
+            out = perm
+        else:
+            raise ValueError(f"Unknown condition variable: {self.condition_variable}")
+
+        sparse = out * mask
+        return sparse
+        
+    def measurement(self):
+        norm_sat = torch.tensor(norm(self.sat, retrieve_min_max('sat_vertical')[0], retrieve_min_max('sat_vertical')[1])).to(self.device)
+        norm_pre = torch.tensor(norm(self.pre, retrieve_min_max('pre_vertical')[0], retrieve_min_max('pre_vertical')[1])).to(self.device)
+        norm_perm = torch.tensor(norm(self.perm, retrieve_min_max('perm_vertical')[0], retrieve_min_max('perm_vertical')[1])).to(self.device)
+        norm_perm = norm_perm.expand_as(norm_sat)
+        assert norm_sat.shape == norm_pre.shape == norm_perm.shape, f"Variables shapes mismatch: {norm_sat.shape}, {norm_pre.shape}, {norm_perm.shape}"
+        
+        mask = torch.ones_like(norm_sat)
+        mask[:, 16:48, 16:48] = 0.0  # Central 32x32 region
+        
+        if self.condition_variable == 'sat':
+            whole = norm_sat
+        elif self.condition_variable == 'pre':
+            whole = norm_pre
+        elif self.condition_variable == 'perm':
+            whole = norm_perm
+        else:
+            raise ValueError(f"Unknown condition variable: {self.condition_variable}")
+        sparse = whole * mask
+        sparse = sparse.unsqueeze(0)
+        print(f'Measurement shape: {sparse.shape}')
+        return sparse
+    
+    def retrieve_reference(self):
+        reference = {
+            'perm': self.perm,
+            'sat': self.sat,
+            'pre': self.pre,
+        }
+        print("Retrieving reference:")
+        for key, value in reference.items():
+            print(f"{key}: shape {value.shape}")
+        return reference
+
+
+
+
+@register_operator(name='vertical_allknown')
+class vertical_allknown(NonLinearOperator):
+    def __init__(self,
+                device,
+                hdf5_path,
+                test_idx,
+                condition_space
+                ) -> None:
+        
+        self.device = device
+        self.condition_space = condition_space
+        
+        test_sim = load_test_hdf5_vertical(hdf5_path)
+        self.perm = test_sim['permeability_log'][test_idx]
+        self.sat = test_sim['saturation'][test_idx]
+        self.pre = test_sim['pressure'][test_idx]
+        print(f"Test data loaded, with shape K: {self.perm.shape}, Sg: {self.sat.shape}, P: {self.pre.shape}")
+        
+        self.surrogate_sg = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_sg.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_sat_vertical.pth')['model_state_dict'])
+        self.surrogate_sg.eval()
+
+        self.surrogate_p = Net3d(modes1=10, modes2=10, modes3=8, width=36).to(self.device)
+        self.surrogate_p.load_state_dict(torch.load('/ehome/zhao/DiffNO/checkpoint/ufno_pre_vertical.pth')['model_state_dict'])
+        self.surrogate_p.eval()
+        
+        tn = [1*12, 2*12, 3*12, 4*12, 5*12, 6*12, 7*12, 8*12, 9*12, 10*12]  # 10 time steps in months
+        ts = [t*86400*30. for t in tn]
+        normed_ts = norm(np.array(ts), retrieve_min_max('ts_vertical')[0], retrieve_min_max('ts_vertical')[1])
+        normed_ts = np.tile(normed_ts[:, None, None], (1, self.sat.shape[-2], self.sat.shape[-1]))    # <1, 64, 64>
+        self.normed_ts = torch.tensor(normed_ts, dtype=torch.float32).to(self.device)
+    
+    def surrogate_forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        batch_size = data.shape[0]
+        ts_expand = self.normed_ts.expand(batch_size, -1, -1, -1)    # <b, t, 64, 64>
+        data_expand = data.expand(-1, ts_expand.size(1), -1, -1)    # <b, c=t, 64, 64>
+        assert ts_expand.shape == data_expand.shape, f"UFNO input shapes mismatch: {ts_expand.shape}, {data_expand.shape}"
+        
+        # * surrogate model
+        # ! for UFNO, the input shape is <B, H, W, T, C>
+        x_surrogate = torch.stack((data_expand, ts_expand), dim=-1)    # <b, t, 64, 64, c=2>
+        x_surrogate = rearrange(x_surrogate, 'b t h w c -> b h w t c')
+        out_surrogate_sg = self.surrogate_sg(x_surrogate)    # <b, 64, 64, t=10>
+        out_surrogate_p = self.surrogate_p(x_surrogate)    # <b, 64, 64, t=10>
+        
+        if len(out_surrogate_sg.shape) < 4:
+            out_surrogate_sg = out_surrogate_sg.unsqueeze(0)
+        if len(out_surrogate_p.shape) < 4:
+            out_surrogate_p = out_surrogate_p.unsqueeze(0)
+        return out_surrogate_sg, out_surrogate_p
+        
+        
+    def forward(self, data, **kwargs):
+        # * diffusion data: <b, c=1, 64, 64>
+        out_sg, out_p = self.surrogate_forward(data)
+        out_sg = rearrange(out_sg, 'b h w t -> b t h w')
+        out_p = rearrange(out_p, 'b h w t -> b t h w')
+        # perm = unnorm(data, retrieve_min_max('perm')[0], retrieve_min_max('perm')[1])
+        perm = data.expand(-1, out_sg.size(1), -1, -1)
+        assert out_sg.shape == out_p.shape == perm.shape, f"Variables shapes mismatch: {out_sg.shape}, {out_p.shape}, {perm.shape}"
+        
+        if self.condition_space == 'solution':
+            out = torch.stack([out_sg, out_p], dim=1)
+            # out = out_sg
+        elif self.condition_space == 'parameter':
+            out = perm
+        else:
+            raise ValueError(f"Unknown condition space: {self.condition_space}")
+
+        return out
+        
+    def measurement(self):
+        norm_sat = torch.tensor(norm(self.sat, retrieve_min_max('sat_vertical')[0], retrieve_min_max('sat_vertical')[1])).to(self.device)
+        norm_pre = torch.tensor(norm(self.pre, retrieve_min_max('pre_vertical')[0], retrieve_min_max('pre_vertical')[1])).to(self.device)
+        norm_perm = torch.tensor(norm(self.perm, retrieve_min_max('perm_vertical')[0], retrieve_min_max('perm_vertical')[1])).to(self.device)
+        norm_perm = norm_perm.expand_as(norm_sat)
+        assert norm_sat.shape == norm_pre.shape == norm_perm.shape, f"Variables shapes mismatch: {norm_sat.shape}, {norm_pre.shape}, {norm_perm.shape}"
+        
+        if self.condition_space == 'solution':
+            whole = torch.stack([norm_sat, norm_pre], dim=0)
+            # whole = norm_sat
+        elif self.condition_space == 'parameter':
+            whole = norm_perm
+        else:
+            raise ValueError(f"Unknown condition space: {self.condition_space}")
+        whole = whole.unsqueeze(0)
+        print(f'Measurement shape: {whole.shape}')
+        return whole
+    
+    def retrieve_reference(self):
+        reference = {
+            'perm': self.perm,
+            'sat': self.sat,
+            'pre': self.pre,
+        }
+        print("Retrieving reference:")
+        for key, value in reference.items():
+            print(f"{key}: shape {value.shape}")
+        return reference
 # =============
 # Noise classes
 # =============
