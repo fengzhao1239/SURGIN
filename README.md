@@ -153,7 +153,7 @@ Once both the UFNO surrogate and diffusion prior are trained, use the notebooks 
 
 ---
 
-## 📁 Repository Structure
+## 🗂️ Repository Structure
 
 ```
 SURGIN/
@@ -197,7 +197,7 @@ SURGIN/
 
 ---
 
-## Citation
+## 📄 Citation
 
 If you find this work useful, please cite:
 
@@ -209,3 +209,12 @@ If you find this work useful, please cite:
   year={2025}
 }
 ```
+
+---
+
+## 💡 Acknowledgement
+
+- [UFNO](https://github.com/gegewen/ufno) — U-Net enhanced Fourier Neural Operator
+- [DiT](https://github.com/facebookresearch/DiT) — Scalable Diffusion Models with Transformers
+- [Guided Diffusion](https://github.com/openai/guided-diffusion) — OpenAI's guided diffusion codebase
+- [DPS](https://github.com/DPS2022/diffusion-posterior-sampling) — Diffusion Posterior Sampling
