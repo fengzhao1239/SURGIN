@@ -1,6 +1,6 @@
 # SURGIN: SURrogate-guided Generative INversion
 
-[![arXiv](https://img.shields.io/badge/arXiv-2509.13189-b31b1b.svg)](https://arxiv.org/abs/2509.13189)
+[![DOI](https://img.shields.io/badge/DOI-10.1016%2Fj.jhydrol.2026.136186-blue)](https://doi.org/10.1016/j.jhydrol.2026.136186)
 [![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-yellow)](https://huggingface.co/datasets/zhaoffeng/SURGIN)
 
 SURGIN integrates a **U-Net enhanced Fourier Neural Operator** (UFNO) surrogate with a **score-based generative model** (SGM), framing the conditional generation as a surrogate prediction-guidance process in a Bayesian perspective. Instead of directly learning the conditional generation of geological parameters, an unconditional SGM is first pretrained in a self-supervised manner to capture the geological prior, after which posterior sampling is performed by leveraging a differentiable U-FNO surrogate to enable efficient forward evaluations conditioned on unseen observations.
@@ -203,11 +203,13 @@ SURGIN/
 If you find this work useful, please cite:
 
 ```bibtex
-@article{feng2025surgin,
+@article{feng2026surgin,
   title={SURGIN: SURrogate-guided Generative INversion for subsurface multiphase flow with quantified uncertainty},
   author={Feng, Zhao and Yan, Bicheng and Zhao, Luanxiao and Shen, Xianda and Zhao, Renyu and Wang, Wenhao and Zhang, Fengshou},
-  journal={arXiv preprint arXiv:2509.13189},
-  year={2025}
+  journal={Journal of Hydrology},
+  pages={136186},
+  year={2026},
+  publisher={Elsevier}
 }
 ```
 
